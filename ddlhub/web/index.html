@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>作业 DDL</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --accent:#2563eb; --danger:#dc2626; --warn:#d97706; --ok:#059669;
+    --chip:#f3f4f6;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --bg:#0f1115; --card:#181b21; --fg:#e5e7eb; --muted:#9ca3af; --line:#262a33;
+           --accent:#60a5fa; --danger:#f87171; --warn:#fbbf24; --ok:#34d399; --chip:#22262e; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+       padding:0 0 88px; -webkit-text-size-adjust:100%}
+  .wrap{max-width:780px;margin:0 auto;padding:16px}
+  header{position:sticky;top:0;z-index:20;background:var(--bg);padding:14px 0 10px;border-bottom:1px solid var(--line)}
+  h1{margin:0;font-size:19px;font-weight:650;letter-spacing:-.01em}
+  h1 small{font-weight:400;color:var(--muted);font-size:12px;margin-left:8px}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:9px 10px}
+  .stat b{display:block;font-size:20px;line-height:1.15;font-variant-numeric:tabular-nums}
+  .stat span{font-size:11px;color:var(--muted)}
+  .stat.d b{color:var(--danger)} .stat.w b{color:var(--warn)} .stat.o b{color:var(--ok)}
+  .toolbar{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+  button{font:inherit;cursor:pointer;border-radius:10px;border:1px solid var(--line);
+         background:var(--card);color:var(--fg);padding:8px 13px;transition:.15s}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button:disabled{opacity:.55;cursor:default}
+  .tabs{display:flex;gap:6px;margin:16px 0 6px}
+  .tab{padding:6px 12px;border-radius:999px;font-size:13px;border:1px solid transparent;
+       background:transparent;color:var(--muted)}
+  .tab.on{background:var(--chip);color:var(--fg);border-color:var(--line)}
+  .group{margin-top:18px}
+  .gh{display:flex;align-items:baseline;gap:8px;font-size:12.5px;color:var(--muted);
+      padding:0 2px 7px;font-weight:600;letter-spacing:.02em}
+  .gh b{color:var(--fg);font-weight:600}
+  .task{background:var(--card);border:1px solid var(--line);border-radius:13px;
+        padding:12px 13px 11px;margin-bottom:8px;position:relative;overflow:hidden}
+  .task::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--muted);opacity:.35}
+  .task.overdue::before{background:var(--danger);opacity:1}
+  .task.soon::before{background:var(--warn);opacity:1}
+  .task.far::before{background:var(--ok);opacity:.6}
+  .task.done{opacity:.5}
+  .task.done .tt{text-decoration:line-through}
+  .tt{font-weight:600;font-size:15px;line-height:1.35;word-break:break-word}
+  .meta{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:12px;color:var(--muted)}
+  .chip{background:var(--chip);border-radius:6px;padding:1.5px 6px;font-size:11.5px}
+  .due{font-variant-numeric:tabular-nums;font-weight:600}
+  .due.overdue{color:var(--danger)} .due.soon{color:var(--warn)}
+  .acts{display:flex;gap:6px;margin-top:9px}
+  .acts button{padding:4.5px 10px;font-size:12.5px;border-radius:8px}
+  .acts .ok{color:var(--ok)} .acts .mut{color:var(--muted)}
+  .empty{text-align:center;color:var(--muted);padding:46px 12px;font-size:14px}
+  .lowconf{width:6px;height:6px;border-radius:50%;background:var(--warn);display:inline-block}
+  dialog{border:none;border-radius:16px;padding:0;max-width:min(620px,94vw);width:100%;
+         background:var(--card);color:var(--fg);box-shadow:0 20px 60px rgba(0,0,0,.35)}
+  dialog::backdrop{background:rgba(0,0,0,.45)}
+  .dlg{padding:18px}
+  .dlg h2{margin:0 0 4px;font-size:16px}
+  .dlg p{margin:0 0 12px;font-size:12.5px;color:var(--muted);line-height:1.6}
+  textarea{width:100%;min-height:210px;resize:vertical;border-radius:10px;border:1px solid var(--line);
+           background:var(--bg);color:var(--fg);padding:11px;font:13.5px/1.6 ui-monospace,Consolas,monospace}
+  .dlgrow{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
+  input[type=text]{flex:1;min-width:120px;border-radius:9px;border:1px solid var(--line);
+                   background:var(--bg);color:var(--fg);padding:8px 10px;font:inherit;font-size:14px}
+  .right{margin-left:auto}
+  .toast{position:fixed;left:50%;bottom:22px;transform:translate(-50%,20px);opacity:0;
+         background:#111827;color:#fff;padding:9px 16px;border-radius:999px;font-size:13px;
+         transition:.25s;pointer-events:none;z-index:99;max-width:88vw;text-align:center}
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+  .foot{margin-top:26px;font-size:11.5px;color:var(--muted);text-align:center;line-height:1.9}
+  .foot a{color:var(--accent);text-decoration:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>作业 DDL <small id="hsub">加载中…</small></h1>
+    <div class="stats">
+      <div class="stat d"><b id="s_overdue">-</b><span>已逾期</span></div>
+      <div class="stat w"><b id="s_today">-</b><span>24 小时内</span></div>
+      <div class="stat"><b id="s_week">-</b><span>本周</span></div>
+      <div class="stat o"><b id="s_open">-</b><span>待办总数</span></div>
+    </div>
+    <div class="toolbar">
+      <button class="primary" id="btnExtract">立即分析</button>
+      <button id="btnPaste">粘贴消息</button>
+      <button id="btnDigest">生成摘要</button>
+      <button data-cal>订阅日历</button>
+    </div>
+  </header>
+
+  <div class="tabs">
+    <button class="tab on" data-status="open">待办</button>
+    <button class="tab" data-status="done">已完成</button>
+    <button class="tab" data-status="ignored">已忽略</button>
+    <button class="tab" data-status="all">全部</button>
+  </div>
+
+  <div id="list"></div>
+
+  <div class="foot">
+    <div id="footinfo"></div>
+    <a href="/calendar.ics">/calendar.ics</a> · 手机上用日历「添加订阅日历」填入本机地址即可自动提醒
+  </div>
+</div>
+
+<dialog id="dlg">
+  <div class="dlg">
+    <h2>粘贴聊天记录</h2>
+    <p>每行一条消息，或整段贴进来都行。会自动做 LLM 抽取，只保留有明确时限的作业。</p>
+    <textarea id="pasteText" placeholder="例：&#10;张老师：第三章习题周五前交到雨课堂&#10;李助教：实验报告3 下周三 23:59 截止"></textarea>
+    <div class="dlgrow">
+      <input type="text" id="pasteChat" placeholder="来源/群名，如 工程热力学群">
+      <button class="primary right" id="btnIngest">导入并分析</button>
+      <button id="btnCancel">取消</button>
+    </div>
+  </div>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let status = 'open';
+let cache = [];
+
+function toast(msg){
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._t); t._t = setTimeout(()=>t.classList.remove('show'), 2600);
+}
+
+function hoursLeft(iso){
+  if(!iso) return null;
+  return (new Date(iso).getTime() - Date.now()) / 3600000;
+}
+
+function fmtDue(iso){
+  const h = hoursLeft(iso);
+  if(h === null) return {text:'时间待确认', cls:'soon'};
+  const d = new Date(iso);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  const hm = d.toTimeString().slice(0,5);
+  if(h < 0){
+    const m = Math.round(-h*60);
+    return {text: m < 60 ? `逾期 ${m} 分钟` : m < 1440 ? `逾期 ${Math.round(m/60)} 小时` : `逾期 ${Math.round(m/1440)} 天`, cls:'overdue'};
+  }
+  if(h < 1)  return {text:`${Math.round(h*60)} 分钟后截止`, cls:'overdue'};
+  if(h < 24) return {text: sameDay ? `今天 ${hm} 截止` : `${Math.round(h)} 小时后截止`, cls:'soon'};
+  if(h < 48) return {text:`明天 ${hm}`, cls:'soon'};
+  return {text:`${d.getMonth()+1}/${d.getDate()} ${hm}（${Math.round(h/24)} 天后）`, cls:'far'};
+}
+
+const SOURCE_LABELS = { manual: '手动粘贴', yuketang: '雨课堂', qq: 'QQ 群', wechat: '微信群' };
+
+const GROUPS = [
+  ['overdue','已逾期', t => hoursLeft(t.due_at) !== null && hoursLeft(t.due_at) < 0],
+  ['today','24 小时内', t => { const h = hoursLeft(t.due_at); return h !== null && h >= 0 && h <= 24; }],
+  ['week','三天内', t => { const h = hoursLeft(t.due_at); return h !== null && h > 24 && h <= 72; }],
+  ['later','更远', t => { const h = hoursLeft(t.due_at); return h !== null && h > 72; }],
+  ['undated','时间待确认', t => !t.due_at],
+];
+
+function render(tasks){
+  const list = $('#list');
+  if(!tasks.length){
+    list.innerHTML = '<div class="empty">这里还是空的。<br>点「粘贴消息」导入群聊记录，或接入雨课堂 / QQ 群。</div>';
+    return;
+  }
+  let html = '';
+  for(const [key, label, pred] of GROUPS){
+    const items = tasks.filter(pred);
+    if(!items.length) continue;
+    html += `<div class="group"><div class="gh"><b>${label}</b> ${items.length}</div>`;
+    for(const t of items) html += card(t);
+    html += '</div>';
+  }
+  list.innerHTML = html;
+  list.querySelectorAll('[data-act]').forEach(b => {
+    b.onclick = () => act(b.dataset.act, +b.dataset.id);
+  });
+}
+
+function card(t){
+  const d = fmtDue(t.due_at);
+  const cls = t.status !== 'open' ? 'done' : (d.cls || '');
+  const low = (t.confidence ?? 1) < 0.6 ? '<span class="lowconf" title="置信度低，建议人工核对"></span>' : '';
+  const changed = (t.history && t.history.length) ? `<span class="chip" title="${esc(t.history[t.history.length-1].why||'')}">改期 ${t.history.length} 次</span>` : '';
+  return `<div class="task ${cls}">
+    <div class="tt">${esc(t.title)} ${low}</div>
+    <div class="meta">
+      <span class="due ${d.cls}">${d.text}</span>
+      ${t.course ? `<span class="chip">${esc(t.course)}</span>` : ''}
+      ${t.kind ? `<span class="chip">${esc(t.kind)}</span>` : ''}
+      ${changed}
+      ${t.source ? `<span>${esc(SOURCE_LABELS[t.source] || t.source)}</span>` : ''}
+    </div>
+    ${t.due_text ? `<div class="meta" style="margin-top:4px"><span style="opacity:.75">「${esc(t.due_text).slice(0,90)}」</span></div>` : ''}
+    <div class="acts">
+      ${t.status === 'open'
+        ? `<button class="ok" data-act="done" data-id="${t.id}">完成</button>
+           <button class="mut" data-act="ignored" data-id="${t.id}">忽略</button>`
+        : `<button data-act="open" data-id="${t.id}">恢复</button>`}
+    </div>
+  </div>`;
+}
+
+function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function api(path, opt){
+  const r = await fetch(path, opt);
+  if(!r.ok) throw new Error(await r.text().catch(()=>r.status));
+  return r.json();
+}
+
+async function load(){
+  const [data, stats] = await Promise.all([
+    api('/api/tasks?status=' + status),
+    api('/api/stats'),
+  ]);
+  cache = data.tasks;
+  render(cache);
+  $('#s_overdue').textContent = stats.overdue;
+  $('#s_today').textContent = stats.today;
+  $('#s_week').textContent = stats.week;
+  $('#s_open').textContent = stats.open;
+  const lr = stats.last_run;
+  $('#hsub').textContent = stats.pending ? `${stats.pending} 条消息待分析` : `${stats.messages} 条消息`;
+  $('#footinfo').textContent = lr
+    ? `上次分析：${new Date(lr.finished_at || lr.started_at).toLocaleString('zh-CN')}${lr.ok ? '' : '（有错误）'}`
+    : '还没跑过分析';
+}
+
+async function act(action, id){
+  await api(`/api/tasks/${id}/status`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({status: action === 'done' ? 'done' : action === 'ignored' ? 'ignored' : 'open'})
+  });
+  toast(action === 'done' ? '已标记完成' : action === 'ignored' ? '已忽略' : '已恢复');
+  load();
+}
+
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('on'));
+  t.classList.add('on'); status = t.dataset.status; load();
+});
+
+$('#btnExtract').onclick = async e => {
+  e.target.disabled = true; e.target.textContent = '分析中…';
+  try{
+    const r = await api('/api/extract', {method:'POST'});
+    toast(`完成：新增 ${r.created}，改期 ${r.updated}，共扫 ${r.messages} 条` + (r.errors?.length ? `（${r.errors.length} 批出错）` : ''));
+    load();
+  }catch(err){ toast('失败：' + err.message.slice(0,120)); }
+  finally{ e.target.disabled = false; e.target.textContent = '立即分析'; }
+};
+
+$('#btnPaste').onclick = () => $('#dlg').showModal();
+$('#btnCancel').onclick = () => $('#dlg').close();
+
+$('#btnIngest').onclick = async () => {
+  const text = $('#pasteText').value.trim();
+  if(!text) return toast('先贴点内容');
+  $('#btnIngest').disabled = true; $('#btnIngest').textContent = '导入中…';
+  try{
+    const chat = $('#pasteChat').value.trim() || '手动录入';
+    const r = await api('/api/ingest', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text, chat, source:'manual'})
+    });
+    $('#dlg').close(); $('#pasteText').value = '';
+    toast(`已导入 ${r.added} 条，正在分析…`);
+    const ex = await api('/api/extract', {method:'POST'});
+    toast(`分析完成：新增 ${ex.created} 条作业`);
+    load();
+  }catch(err){ toast('失败：' + err.message.slice(0,120)); }
+  finally{ $('#btnIngest').disabled = false; $('#btnIngest').textContent = '导入并分析'; }
+};
+
+$('#btnDigest').onclick = async () => {
+  try{
+    const r = await api('/api/digest');
+    await navigator.clipboard.writeText(r.text).then(
+      () => toast('摘要已复制到剪贴板'),
+      () => toast(r.text.slice(0,140))
+    );
+  }catch(e){ toast('生成失败'); }
+};
+
+document.querySelectorAll('[data-cal]').forEach(b => b.onclick = () => {
+  const url = location.origin + '/calendar.ics';
+  navigator.clipboard?.writeText(url).then(
+    () => toast('日历订阅地址已复制'),
+    () => toast(url)
+  );
+});
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>

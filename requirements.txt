@@ -1,0 +1,5 @@
+fastapi>=0.110
+uvicorn>=0.27
+requests>=2.31
+PyYAML>=6.0
+wxauto>=3.9.11   # 微信群采集，仅支持微信 3.9.x
