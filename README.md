@@ -19,11 +19,14 @@
 cd ddl-hub
 pip install -r requirements.txt
 
+cp config.example.yaml config.yaml   # 只在第一次：复制配置模板后再填自己的 Cookie/token
 python run.py                       # 起服务 → http://127.0.0.1:8848
 python run.py --once                # 立即抽取一次，终端打印摘要
 python run.py --collect --once      # 先采集已启用的数据源，再抽取
 python run.py --once --push         # 抽取 + 推送到 Telegram
 ```
+
+`config.yaml` 和 `data/` 已在 `.gitignore` 里，不会进版本库 —— 前者含雨课堂 Cookie 和机器人 token，后者是你的作业数据。
 
 网页上可以直接点「粘贴消息」，把群聊记录贴进去，会立刻分析入库。
 

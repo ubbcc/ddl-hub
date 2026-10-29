@@ -1,0 +1,33 @@
+server:
+  host: 127.0.0.1
+  port: 8848
+
+llm:
+  # claude-cli: 复用本机 claude 命令，无需额外 API key
+  backend: claude-cli
+  timeout_seconds: 240
+  batch_size: 60
+
+notify:
+  daily_time: "08:00"      # 每天几点跑抽取+推送
+  digest_hours: 48         # 摘要里列出未来多少小时内的任务
+  telegram:
+    enabled: false
+    token: ""              # 找 @BotFather 建机器人拿 token
+    chat_id: ""            # 你的 Telegram user id
+
+sources:
+  yuketang:
+    enabled: false
+    host: "www.yuketang.cn"   # 学校有独立入口就换成 xxx.yuketang.cn
+    cookie: ""                # 浏览器登录后复制含 sessionid 的整条 Cookie
+  qq:
+    enabled: false
+    mode: napcat
+    onebot_http: "http://127.0.0.1:3000"
+    token: ""
+    groups: []                # 只收这些群，留空=全部
+  wechat:
+    enabled: false
+    mode: wxauto              # manual | wxauto（wxauto 需要微信 3.9.x）
+    groups: []                # 要读取的群名，和微信会话列表里显示的完全一致

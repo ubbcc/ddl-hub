@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# 本地配置与数据：含 Cookie / 机器人 token / 个人作业数据，不要提交
+config.yaml
+data/
