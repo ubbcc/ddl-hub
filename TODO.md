@@ -46,6 +46,45 @@
 - [ ] 看板按 kind 加颜色/图标区分
 - [ ] 统计口径：按 kind 分组计数（哪类作业最多、哪门课最压人）
 
+## 5. LLM 层大改：多 API 支持 + 免费模型配置向导
+
+现状：`ddlhub/llm.py` 只有两个 backend（`claude-cli` / `api`）。`api` 写死了 Anthropic Messages 接口，模型名从环境变量 `DDLHUB_MODEL` 取，每加一家服务商都要改代码。
+
+- [ ] 抽 provider 层：`ddlhub/llm/providers/` 每家一个模块，统一 `complete(prompt) -> str`，`extract_batch` 只负责组 prompt + 解析结果
+- [ ] 优先做 OpenAI 兼容协议，一个实现覆盖大多数服务商：DeepSeek / 智谱 GLM / 硅基流动 / 月之暗面 / 通义 / 本地 Ollama、vLLM、LM Studio；配置只要 base_url + api_key + model
+- [ ] 保留 `claude-cli` 为默认（本机零配置、零额外成本）；原 `api` 重命名为 `anthropic`
+- [ ] `config.yaml` 从单个字符串改成 provider 块：
+  ```yaml
+  llm:
+    provider: claude-cli      # claude-cli | anthropic | openai-compat
+    base_url:                 # openai-compat 必填
+    api_key:                  # 也可从环境变量 DDLHUB_API_KEY 读
+    model:
+    timeout_seconds: 240
+    batch_size: 60
+  ```
+- [ ] 配置向导 `python -m ddlhub.setup_llm`：交互选服务商 → 填 key/base_url → 发一条探测请求验证连通与 JSON 服从性 → 写回 config.yaml
+- [ ] 开发者推荐免费 LLM，写进向导首屏和 README：
+  - 首选 `claude-cli`（项目默认，无需任何 key）
+  - 硅基流动 SiliconFlow：注册送额度，Qwen / GLM 小模型有免费档
+  - 智谱 GLM-4-Flash：长期免费
+  - Google Gemini Flash：有免费额度
+  - DeepSeek：几乎免费
+  - 本地 Ollama / LM Studio：完全离线，但要机器扛得住
+  - 说明：免费模型「只输出 JSON」的服从性差，靠 `_extract_json_array` 的宽松解析兜底
+- [ ] 启动自检：provider 不可用时给明确报错，而不是每天定时任务静默失败
+- [ ] 横向评测：拿 A/B 组测试用例当基准（见下方「测试用例」），同一批消息跑各家，比对抽取准确率与耗时，结果写进 README
+- [ ] 成本与限流：把每次调用的 token 数与耗时记进 `runs` 表，方便挑模型
+
+风险点：不同模型对结构化输出的服从度差异很大，弱模型可能要给 per-provider 追加 few-shot 示例；`_clean_due` 的年份窗口、`idx` 校验这些后处理要保持 provider 无关。
+
+## 测试用例（已设计，尚未落文件）
+
+- [ ] A 组 25 条确定性单测（mock 模型输出）：`_extract_json_array` / `_clean_due` / `_clamp` / `_fmt_msg` / `extract_batch` 过滤
+- [ ] B 组语义金标准（真调模型）：时间解析 9 条、噪音过滤 7 条、内容正确性 6 条、脏数据 6 条、学期末标注 2 条、批处理 2 条
+- [ ] C 组落库合并 7 条（走 `db.upsert_task`，含跨课程误合并这个已知风险）
+- [ ] B 组用例年份依赖 `_clean_due` 的 [当前年-2, 当前年+3] 窗口，需用相对当前年构造日期，否则两年后失效
+
 ## 其它已知问题
 
 - 雨课堂 `sessionid` 几小时到几天过期，过期后每日任务静默失败。可以加一条：连续 N 天没有新消息时提醒用户换 cookie。
