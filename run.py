@@ -44,7 +44,7 @@ def run_once(push: bool = False, collect: bool = False) -> None:
     for e in stats["errors"]:
         print(f"[extract][error] {e}", file=sys.stderr)
 
-    hours = int(cfg.get("notify", {}).get("digest_hours", 48))
+    hours = int(cfg.get("notify", {}).get("digest_hours", 72))
     text = notify.digest(cfg=cfg, hours=hours)
     print()
     print(text)
@@ -70,7 +70,7 @@ def _scheduler(cfg: dict) -> None:
             try:
                 collect_sources(cfg)
                 stats = pipeline.run_extraction(config=cfg)
-                text = notify.digest(cfg=cfg, hours=int(cfg.get("notify", {}).get("digest_hours", 48)))
+                text = notify.digest(cfg=cfg, hours=int(cfg.get("notify", {}).get("digest_hours", 72)))
                 notify.send(text, cfg)
                 print(f"[scheduler] {today} 完成：{stats}", flush=True)
             except Exception as e:

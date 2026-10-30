@@ -151,6 +151,22 @@ NapCat v4.18.28 的 `packetBackend` 不支持 QQ 构建 `9.9.36-53644-x64`
 - [ ] 真实收发一次：向 @peter_alex_homework_alert_bot 发 `/add_homework` → 发内容 → `/done`
 - [ ] 图片走 `claude -p` 远程解析，一张要十几秒；大图要不要本地 OCR 待定
 
+## 7. 手动修改作业（✅ 已完成 2026-10-30）
+
+- [x] `PATCH /api/tasks/{id}` 重写：可清空字段、校验时间格式、返回改动详情
+- [x] `db.update_task` 重算指纹（撞名返回 conflict 而不是 500，同时兜 `IntegrityError`）
+- [x] 改期写进 `history`，`done` 的任务改期后自动重开，`confidence` 抬到 0.9
+- [x] 看板卡片加「编辑 / 补截止时间」弹窗，时间填上后自动归到对应分组
+- [x] Telegram `/list` `/set <id> <字段> <值>` `/clear <id> due`
+- [x] 时间解析：确定性解析先行（11-25 / 11月25日 / 明天 23:59），再来 `llm.parse_due` 兜底
+- [x] 顺带修 `llm._clean_due` 用机器时区的问题，改成 `db.TZ`
+- [x] `.ics` 的 UID 从指纹改成 `task id`，改标题不再让日历当成新事件
+- [x] `_fmt_msg` 单条内容上限 600 → `MAX_MSG_CHARS = 1200`（PPT 整页文字常超 600）
+- [x] 每日推送分组 48h → 72h，与看板「三天内」对齐（四处默认值都改了）
+
+已知限制：自动抽取对 `due_at` 是权威的，手动改的时间会被后续抽取覆盖；改课程名可能导致
+之后的抽取匹配不上而重复建条目。
+
 ## 测试用例（已设计，尚未落文件）
 
 - [ ] A 组 25 条确定性单测（mock 模型输出）：`_extract_json_array` / `_clean_due` / `_clamp` / `_fmt_msg` / `extract_batch` 过滤

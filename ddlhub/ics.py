@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime, timedelta
 
 from . import db
@@ -57,7 +56,8 @@ def build_ics(tasks: list[dict], calendar_name: str = "作业 DDL") -> str:
             due = datetime.fromisoformat(t["due_at"]).astimezone(db.TZ)
         except ValueError:
             continue
-        uid = hashlib.sha1(t["fingerprint"].encode()).hexdigest()[:20]
+        # UID 用稳定的数据库 id：指纹会随改名/改课变化，一变日历就当成新事件
+        uid = f"ddlhub-task-{t['id']}@local"
         emoji = KIND_EMOJI.get(t.get("kind") or "", "⏰")
         summary = f"{emoji} {t['title']}" + (f" - {t['course']}" if t.get("course") else "")
         desc = "\n".join(

@@ -68,7 +68,7 @@ def _fmt_due(due: datetime) -> str:
     return f"{mins // 1440} 天后（{due:%m-%d %H:%M}）"
 
 
-def digest(conn=None, cfg: dict | None = None, hours: int = 48) -> str:
+def digest(conn=None, cfg: dict | None = None, hours: int = 72) -> str:
     own = conn is None
     conn = conn or db.connect()
     try:
@@ -99,7 +99,7 @@ def digest(conn=None, cfg: dict | None = None, hours: int = 48) -> str:
     label = {
         "overdue": "⚠️ 已逾期",
         "today": "🔥 24 小时内",
-        "soon": f"⏳ {hours} 小时内",
+        "soon": "⏳ 三天内" if hours == 72 else f"⏳ {hours} 小时内",
         "later": "📅 更远",
         "undated": "❓ 待确认时间",
     }

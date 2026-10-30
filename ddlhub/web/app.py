@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from .. import db, ics, notify, pipeline
 
@@ -26,6 +26,7 @@ class StatusIn(BaseModel):
 
 
 class PatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     title: str | None = None
     course: str | None = None
     kind: str | None = None
@@ -60,16 +61,38 @@ def api_set_status(task_id: int, body: StatusIn):
         conn.close()
 
 
+_PATCH_STATUS = {"not_found": 404, "invalid_due": 400, "invalid_field": 400, "conflict": 409}
+
+
 @app.patch("/api/tasks/{task_id}")
 def api_patch(task_id: int, body: PatchIn):
-    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    sent = body.model_dump(exclude_unset=True)
+    if not sent:
+        raise HTTPException(400, "没有要修改的字段")
+
+    fields: dict = {}
+    clear: list[str] = []
+    for key, value in sent.items():
+        # 可选字段传 null 或空串都算清空；title 不能清空，交给 db 报 invalid_field
+        if key != "title" and (value is None or (isinstance(value, str) and not value.strip())):
+            clear.append(key)
+        else:
+            fields[key] = value
+
     conn = db.connect()
     try:
-        if not db.update_task(conn, task_id, fields):
-            raise HTTPException(404, "任务不存在或没有可改字段")
-        return {"ok": True}
+        result = db.update_task(conn, task_id, fields, clear=tuple(clear))
     finally:
         conn.close()
+
+    if not result["ok"]:
+        raise HTTPException(_PATCH_STATUS.get(result["code"], 400), result["error"])
+    return {
+        "ok": True,
+        "task": result["task"],
+        "previous_due": result["previous_due"],
+        "changed": result["changed"],
+    }
 
 
 @app.post("/api/ingest")
@@ -87,7 +110,7 @@ def api_extract():
 @app.get("/api/digest")
 def api_digest():
     cfg = pipeline.load_config()
-    return {"text": notify.digest(cfg=cfg, hours=int(cfg.get("notify", {}).get("digest_hours", 48)))}
+    return {"text": notify.digest(cfg=cfg, hours=int(cfg.get("notify", {}).get("digest_hours", 72)))}
 
 
 @app.get("/api/stats")

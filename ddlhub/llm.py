@@ -7,6 +7,8 @@ import re
 import subprocess
 from datetime import datetime
 
+from .db import TZ
+
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
 SYSTEM_PROMPT = """你是作业截止时间抽取器。今天是 {today}（{weekday}），时区 Asia/Shanghai (+08:00)。
@@ -44,10 +46,15 @@ SYSTEM_PROMPT = """你是作业截止时间抽取器。今天是 {today}（{week
 """
 
 
+# 单条消息送进模型的字符上限。PPT/图片解析出来的一整页文字常常上千字，
+# 作业条款可能就在后半段，所以别截得太狠。
+MAX_MSG_CHARS = 1200
+
+
 def _fmt_msg(m: dict, idx: int) -> str:
     content = (m.get("content") or "").replace("\n", " ⏎ ").strip()
-    if len(content) > 600:
-        content = content[:600] + "…"
+    if len(content) > MAX_MSG_CHARS:
+        content = content[:MAX_MSG_CHARS] + "…"
     return (
         f"[{idx}] {m.get('source', '')}|{m.get('chat', '')}|"
         f"{m.get('sent_at') or ''}|{m.get('sender') or ''}: {content}"
@@ -181,8 +188,45 @@ def _clean_due(v) -> str | None:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        dt = dt.astimezone()
+        # 模型不带时区时按项目时区解释，不能用机器本地时区
+        dt = dt.replace(tzinfo=TZ)
+    now = datetime.now(TZ)
     # 脏数据里常见的离谱年份（1970、2099）直接丢掉，宁可让用户手工补
-    if not (datetime.now().year - 2 <= dt.year <= datetime.now().year + 3):
+    if not (now.year - 2 <= dt.year <= now.year + 3):
         return None
     return dt.isoformat(timespec="seconds")
+
+
+DUE_PROMPT = """把下面这句话里的时间解析成一个 ISO 8601 时间戳，必须带 +08:00 时区。
+今天是 {today}（{weekday}），相对时间（明天、下周三、月底）都以今天为基准。
+只输出时间戳本身：不要解释，不要引号，不要 markdown 代码块。
+原文没写钟点就用当天 23:59:00。解析不出来只输出 null。
+
+句子：{text}
+"""
+
+
+def parse_due(text: str, timeout: int = 20) -> str | None:
+    """把「下周三四点前」这类自然语言解析成 ISO 时间；解析不出返回 None。
+
+    只给手动改截止时间用，所以超时压得比抽取短得多，别把调用方卡住。
+    """
+    if not text or not text.strip():
+        return None
+    now = datetime.now(TZ)
+    prompt = DUE_PROMPT.format(
+        today=now.strftime("%Y-%m-%d"),
+        weekday=WEEKDAYS[now.weekday()],
+        text=text.strip()[:200],
+    )
+    try:
+        raw = _call_claude_cli(prompt, timeout)
+    except Exception:
+        return None
+    line = (raw or "").strip().strip("`").strip()
+    if not line:
+        return None
+    line = line.splitlines()[0].strip().strip("\"'")
+    if line.lower() in ("null", "none", "无"):
+        return None
+    return _clean_due(line)

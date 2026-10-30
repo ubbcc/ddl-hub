@@ -10,7 +10,7 @@ llm:
 
 notify:
   daily_time: "08:00"      # 每天几点跑抽取+推送
-  digest_hours: 48         # 摘要里列出未来多少小时内的任务
+  digest_hours: 72         # 摘要里列出未来多少小时内的任务（72=三天，与看板一致）
   telegram:
     enabled: false
     token: ""              # 找 @BotFather 建机器人拿 token
@@ -18,9 +18,9 @@ notify:
 
 intake:
   # 手动录入：向 bot 发 /add_homework，再发作业消息/截图，/done 解析入看板。
-  # 必须是**另一个** bot——和上面 notify 用的那个共用会互相抢 update。
+  # 默认复用上面 notify 的 bot（它只发消息、不拉更新，槽位是空的）。
   enabled: false
-  token: ""
+  token: ""                     # 留空=复用 notify.telegram.token
   session_timeout_minutes: 30   # 录入会话多久没动静就作废
   allowed_chat_ids: []          # 留空=只接受 notify.telegram.chat_id
 

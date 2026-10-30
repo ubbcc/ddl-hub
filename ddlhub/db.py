@@ -337,16 +337,179 @@ def set_status(conn: sqlite3.Connection, task_id: int, status: str) -> bool:
     return cur.rowcount > 0
 
 
-def update_task(conn: sqlite3.Connection, task_id: int, fields: dict) -> bool:
-    allowed = {"title", "course", "kind", "due_at", "due_text"}
-    sets = {k: v for k, v in fields.items() if k in allowed}
-    if not sets:
-        return False
+EDITABLE_FIELDS = {"title", "course", "kind", "due_at", "due_text"}
+# title 在 SCHEMA 里是 NOT NULL，清空它没有意义，直接拒绝
+CLEARABLE_FIELDS = {"course", "kind", "due_at", "due_text"}
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}$")
+
+
+def _normalize_due(value) -> tuple[str | None, str | None]:
+    """把用户输入归一成带 +08:00 的 ISO 字符串，返回 (iso, 错误码)。
+
+    无时区的时间按 db.TZ 解释（不是机器时区）；只有日期的补 23:59，
+    与 llm.py 里给模型的规则保持一致。
+    """
+    if value is None:
+        return None, None
+    if not isinstance(value, str):
+        return None, "invalid_due"
+    s = value.strip()
+    if not s:
+        return None, None
+
+    date_only = bool(_DATE_ONLY_RE.match(s))
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None, "invalid_due"
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=TZ)
+    else:
+        dt = dt.astimezone(TZ)
+
+    if date_only:
+        dt = dt.replace(hour=23, minute=59, second=0, microsecond=0)
+    else:
+        dt = dt.replace(microsecond=0)
+
+    now = datetime.now(TZ)
+    if not (now.year - 2 <= dt.year <= now.year + 3):
+        return None, "invalid_due"
+    return dt.isoformat(timespec="seconds"), None
+
+
+def _row_to_task(row: sqlite3.Row) -> dict:
+    d = dict(row)
+    try:
+        d["history"] = json.loads(d.get("history") or "[]")
+    except (ValueError, TypeError):
+        d["history"] = []
+    return d
+
+
+def update_task(
+    conn: sqlite3.Connection,
+    task_id: int,
+    fields: dict,
+    clear: tuple | list = (),
+    why: str = "手动修改",
+) -> dict:
+    """手动改一条任务，返回结构化结果。
+
+    fields 里放要写入的值；clear 里放要置空的字段名。成功时回
+    {"ok": True, "task", "previous_due", "changed"}，失败时回
+    {"ok": False, "code": not_found|invalid_field|invalid_due|conflict, "error"}。
+    """
+    fields = dict(fields or {})
+    clear = tuple(clear or ())
+
+    unknown = set(fields) - EDITABLE_FIELDS
+    if unknown:
+        return {"ok": False, "code": "invalid_field",
+                "error": "不支持修改：" + "、".join(sorted(unknown))}
+    bad_clear = set(clear) - CLEARABLE_FIELDS
+    if bad_clear:
+        return {"ok": False, "code": "invalid_field",
+                "error": "这些字段不能清空：" + "、".join(sorted(bad_clear))}
+    if set(fields) & set(clear):
+        return {"ok": False, "code": "invalid_field", "error": "同一字段不能既赋值又清空"}
+
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        return {"ok": False, "code": "not_found", "error": "任务不存在"}
+
+    new: dict = {}
+
+    if "title" in fields:
+        title = str(fields["title"] or "").strip()
+        if not title:
+            return {"ok": False, "code": "invalid_field", "error": "标题不能为空"}
+        new["title"] = title[:120]
+
+    for f in ("course", "kind", "due_text"):
+        if f in fields:
+            v = fields[f]
+            v = "" if v is None else str(v).strip()
+            new[f] = (v or None)
+        elif f in clear:
+            new[f] = None
+
+    if "due_at" in fields or "due_at" in clear:
+        iso, err = _normalize_due(fields.get("due_at"))
+        if err:
+            return {"ok": False, "code": "invalid_due",
+                    "error": "截止时间格式不对，用 2026-11-25 或 2026-11-25 23:59"}
+        new["due_at"] = iso
+
+    changes = {k: v for k, v in new.items() if (row[k] or None) != (v or None)}
+    if not changes:
+        return {
+            "ok": True,
+            "task": _row_to_task(row),
+            "previous_due": None,
+            "previous_status": row["status"],
+            "changed": [],
+        }
+
+    old_fp = row["fingerprint"]
+    new_fp = fingerprint(changes.get("title", row["title"]), changes.get("course", row["course"]))
+    if new_fp != old_fp:
+        other = conn.execute(
+            "SELECT id, title, course, status FROM tasks WHERE fingerprint = ? AND id <> ?",
+            (new_fp, task_id),
+        ).fetchone()
+        if other is not None:
+            return {
+                "ok": False,
+                "code": "conflict",
+                "error": f"已存在同名作业（#{other['id']} {other['title']}）",
+                "conflict": {
+                    "id": other["id"],
+                    "title": other["title"],
+                    "course": other["course"],
+                    "status": other["status"],
+                },
+            }
+
+    previous_due = row["due_at"]
+    due_changed = "due_at" in changes
+
+    sets = dict(changes)
+    if new_fp != old_fp:
+        sets["fingerprint"] = new_fp
+    if due_changed:
+        history = json.loads(row["history"] or "[]")
+        history.append({
+            "at": now_iso(),
+            "from": previous_due,
+            "to": changes["due_at"],
+            "why": why,
+        })
+        sets["history"] = json.dumps(history, ensure_ascii=False)
+        if changes["due_at"]:
+            sets["confidence"] = max(row["confidence"] or 0.0, 0.9)
+            if row["status"] == "done":
+                sets["status"] = "open"
     sets["updated_at"] = now_iso()
+
     cols = ", ".join(f"{k} = ?" for k in sets)
-    cur = conn.execute(f"UPDATE tasks SET {cols} WHERE id = ?", (*sets.values(), task_id))
+    try:
+        conn.execute(f"UPDATE tasks SET {cols} WHERE id = ?", (*sets.values(), task_id))
+    except sqlite3.IntegrityError:
+        # 预检之后、写入之前别的线程插了同指纹的行
+        conn.rollback()
+        return {"ok": False, "code": "conflict", "error": "已存在同名作业，请换个标题"}
     conn.commit()
-    return cur.rowcount > 0
+
+    fresh = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return {
+        "ok": True,
+        "task": _row_to_task(fresh),
+        "previous_due": previous_due,
+        "previous_status": row["status"],
+        "changed": sorted(changes),
+    }
 
 
 def log_run(conn: sqlite3.Connection, started_at: str, ok: bool, detail: str) -> None:

@@ -1,4 +1,5 @@
 fastapi>=0.110
+pydantic>=2.9      # app.py 用 model_dump，必须是 pydantic v2
 uvicorn>=0.27
 requests>=2.31
 PyYAML>=6.0

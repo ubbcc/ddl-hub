@@ -68,8 +68,12 @@
   textarea{width:100%;min-height:210px;resize:vertical;border-radius:10px;border:1px solid var(--line);
            background:var(--bg);color:var(--fg);padding:11px;font:13.5px/1.6 ui-monospace,Consolas,monospace}
   .dlgrow{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
-  input[type=text]{flex:1;min-width:120px;border-radius:9px;border:1px solid var(--line);
+  input[type=text],input[type=datetime-local],select{
+                   width:100%;border-radius:9px;border:1px solid var(--line);
                    background:var(--bg);color:var(--fg);padding:8px 10px;font:inherit;font-size:14px}
+  .dlgrow input[type=text]{flex:1;min-width:120px}
+  .field{display:flex;flex-direction:column;gap:5px;margin-bottom:10px}
+  .field label{font-size:12px;color:var(--muted)}
   .right{margin-left:auto}
   .toast{position:fixed;left:50%;bottom:22px;transform:translate(-50%,20px);opacity:0;
          background:#111827;color:#fff;padding:9px 16px;border-radius:999px;font-size:13px;
@@ -125,6 +129,38 @@
   </div>
 </dialog>
 
+<dialog id="dlgEdit">
+  <div class="dlg">
+    <h2>编辑作业</h2>
+    <p>改完保存就生效。截止时间填上后，这条作业会自动落到「已逾期 / 24 小时内 / 三天内 / 更远」对应分组。</p>
+    <div class="field">
+      <label for="edTitle">标题</label>
+      <input type="text" id="edTitle" maxlength="120">
+    </div>
+    <div class="field">
+      <label for="edCourse">课程</label>
+      <input type="text" id="edCourse" maxlength="60" placeholder="留空表示不填">
+    </div>
+    <div class="field">
+      <label for="edKind">类型</label>
+      <select id="edKind"></select>
+    </div>
+    <div class="field">
+      <label for="edDue">截止时间</label>
+      <input type="datetime-local" id="edDue">
+    </div>
+    <div class="field">
+      <label for="edText">原始描述</label>
+      <input type="text" id="edText" maxlength="200" placeholder="例如「国庆之后」">
+    </div>
+    <div class="dlgrow">
+      <button id="btnClearDue">清除时间</button>
+      <button class="primary right" id="btnSaveEdit">保存</button>
+      <button id="btnCancelEdit">取消</button>
+    </div>
+  </div>
+</dialog>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -142,12 +178,17 @@ function hoursLeft(iso){
   return (new Date(iso).getTime() - Date.now()) / 3600000;
 }
 
+// 显示一律钉到项目时区，否则浏览器不在 GMT+8 时「看板上的时间」和「编辑框里的时间」会打架
+const TZ_DATE_KEY = new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Shanghai', year:'numeric', month:'2-digit', day:'2-digit'});
+const TZ_MD = new Intl.DateTimeFormat('zh-CN', {timeZone:'Asia/Shanghai', month:'numeric', day:'numeric'});
+const TZ_HM = new Intl.DateTimeFormat('zh-CN', {timeZone:'Asia/Shanghai', hour:'2-digit', minute:'2-digit', hour12:false});
+
 function fmtDue(iso){
   const h = hoursLeft(iso);
   if(h === null) return {text:'时间待确认', cls:'soon'};
   const d = new Date(iso);
-  const sameDay = d.toDateString() === new Date().toDateString();
-  const hm = d.toTimeString().slice(0,5);
+  const sameDay = TZ_DATE_KEY.format(d) === TZ_DATE_KEY.format(new Date());
+  const hm = TZ_HM.format(d);
   if(h < 0){
     const m = Math.round(-h*60);
     return {text: m < 60 ? `逾期 ${m} 分钟` : m < 1440 ? `逾期 ${Math.round(m/60)} 小时` : `逾期 ${Math.round(m/1440)} 天`, cls:'overdue'};
@@ -155,7 +196,7 @@ function fmtDue(iso){
   if(h < 1)  return {text:`${Math.round(h*60)} 分钟后截止`, cls:'overdue'};
   if(h < 24) return {text: sameDay ? `今天 ${hm} 截止` : `${Math.round(h)} 小时后截止`, cls:'soon'};
   if(h < 48) return {text:`明天 ${hm}`, cls:'soon'};
-  return {text:`${d.getMonth()+1}/${d.getDate()} ${hm}（${Math.round(h/24)} 天后）`, cls:'far'};
+  return {text:`${TZ_MD.format(d)} ${hm}（${Math.round(h/24)} 天后）`, cls:'far'};
 }
 
 const SOURCE_LABELS = { manual: '手动粘贴', yuketang: '雨课堂', qq: 'QQ 群', wechat: '微信群' };
@@ -184,7 +225,9 @@ function render(tasks){
   }
   list.innerHTML = html;
   list.querySelectorAll('[data-act]').forEach(b => {
-    b.onclick = () => act(b.dataset.act, +b.dataset.id);
+    b.onclick = () => b.dataset.act === 'edit'
+      ? openEdit(+b.dataset.id)
+      : act(b.dataset.act, +b.dataset.id);
   });
 }
 
@@ -208,6 +251,7 @@ function card(t){
         ? `<button class="ok" data-act="done" data-id="${t.id}">完成</button>
            <button class="mut" data-act="ignored" data-id="${t.id}">忽略</button>`
         : `<button data-act="open" data-id="${t.id}">恢复</button>`}
+      <button data-act="edit" data-id="${t.id}">${t.due_at ? '编辑' : '补截止时间'}</button>
     </div>
   </div>`;
 }
@@ -216,7 +260,16 @@ function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','
 
 async function api(path, opt){
   const r = await fetch(path, opt);
-  if(!r.ok) throw new Error(await r.text().catch(()=>r.status));
+  if(!r.ok){
+    let msg = `HTTP ${r.status}`;
+    try{
+      const j = await r.json();
+      msg = typeof j.detail === 'string' ? j.detail
+          : Array.isArray(j.detail) ? j.detail.map(d => d.msg || JSON.stringify(d)).join('；')
+          : JSON.stringify(j);
+    }catch{ /* 不是 JSON，就用状态码 */ }
+    throw new Error(msg);
+  }
   return r.json();
 }
 
@@ -246,6 +299,72 @@ async function act(action, id){
   toast(action === 'done' ? '已标记完成' : action === 'ignored' ? '已忽略' : '已恢复');
   load();
 }
+
+const KINDS = ['作业','小测','考试','实验','论文','展示','其他'];
+let editingId = null;
+
+function openEdit(id){
+  const t = cache.find(x => x.id === id);
+  if(!t) return;
+  editingId = id;
+  $('#edTitle').value = t.title || '';
+  $('#edCourse').value = t.course || '';
+
+  const opts = KINDS.slice();
+  if(t.kind && !opts.includes(t.kind)) opts.push(t.kind);   // 保住枚举外的历史取值
+  $('#edKind').innerHTML = '<option value="">（不填）</option>' +
+    opts.map(k => `<option value="${esc(k)}">${esc(k)}</option>`).join('');
+  $('#edKind').value = t.kind || '';
+
+  // due_at 存的是带 +08:00 的串，截前 16 位就是本地墙上时间，别过 new Date()
+  $('#edDue').value = t.due_at ? t.due_at.slice(0, 16) : '';
+  $('#edText').value = t.due_text || '';
+  $('#dlgEdit').showModal();
+}
+
+async function saveEdit(){
+  const t = cache.find(x => x.id === editingId);
+  if(!t) return;
+  const body = {};
+
+  const title = $('#edTitle').value.trim();
+  if(!title) return toast('标题不能为空');
+  if(title !== (t.title || '')) body.title = title;
+
+  const course = $('#edCourse').value.trim();
+  if(course !== (t.course || '')) body.course = course || null;
+
+  const kind = $('#edKind').value;
+  if(kind !== (t.kind || '')) body.kind = kind || null;
+
+  const due = $('#edDue').value;
+  const oldDue = t.due_at ? t.due_at.slice(0, 16) : '';
+  if(due !== oldDue) body.due_at = due ? due + ':00+08:00' : null;
+
+  const text = $('#edText').value.trim();
+  if(text !== (t.due_text || '')) body.due_text = text || null;
+
+  if(!Object.keys(body).length) return toast('没有改动');
+
+  try{
+    await api(`/api/tasks/${editingId}`, {
+      method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    $('#dlgEdit').close();
+    toast('已保存');
+    load();
+  }catch(err){
+    toast('保存失败：' + String(err.message).slice(0, 140));
+  }
+}
+
+$('#btnSaveEdit').onclick = saveEdit;
+$('#btnCancelEdit').onclick = () => $('#dlgEdit').close();
+$('#btnClearDue').onclick = () => {
+  $('#edDue').value = '';
+  toast('已清空截止时间，点保存生效');
+};
 
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   document.querySelectorAll('.tab').forEach(x => x.classList.remove('on'));
