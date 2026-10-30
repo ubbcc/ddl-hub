@@ -45,11 +45,41 @@ python run.py --once --push         # 抽取 + 推送到 Telegram
 - **每日定时**：`notify.daily_time: "08:00"`，服务在跑就会每天自动抽取 + 推送。
 - **日历**：`.ics` 里内置了两个 VALARM（提前 1 天、提前 3 小时），订阅后系统日历会自己响。
 
+## 手动录入（Telegram）
+
+默认就复用提醒用的那个 bot，不用另外建。`config.yaml`：
+
+```yaml
+intake:
+  enabled: true
+  token: ""                     # 留空=复用 notify.telegram.token
+  session_timeout_minutes: 30
+  allowed_chat_ids: []          # 留空=只接受 notify.telegram.chat_id
+```
+
+提醒 bot 平时只发 `sendMessage`、从不拉更新，所以它的 `getUpdates` 槽位是空的，
+拿来收消息不冲突。**但**如果你把这个 bot 同时也接给了别的程序做长轮询
+（比如 Claude Code 的 Telegram 插件），两边就会抢同一条更新——那种情况下才需要
+在 `intake.token` 里填另一个 bot。
+
+然后在 Telegram 里：
+
+1. `/add_homework` 开一轮录入
+2. 直接发作业文字、截图或 .doc/.pdf/.pptx 文件，发一条存一条（不会立刻解析）
+3. `/done` 统一解析 → 并入看板 → 回报**原始解析结果**和**合并结果**（新增 / 改期 / 已存在）
+4. `/cancel` 丢弃本轮
+
+同一个作业重复录入不会产生两条：标题指纹 + 章号 + 课名 + 截止日会一起比对；
+同一天内只差钟点（`00:00` vs `23:59`）视为同一条，不报「改期」。
+Telegram 的命令名只允许字母数字下划线，所以 BotFather 菜单里注册的是 `/add_homework`；
+`/add-homework` 这种写法程序也认，只是不会出现在命令联想里。
+
 ## 数据源
 
 | 来源 | 状态 | 接入方式 |
 |---|---|---|
 | 手动粘贴 | ✅ 可用 | 网页「粘贴消息」 |
+| 手动录入 | ✅ 可用 | Telegram bot `/add_homework`，支持文字/截图/文件 |
 | 微信群 | ✅ 待启用 | wxauto（UI 自动化），需微信 3.9.x |
 | 雨课堂 | ✅ 可用 | Cookie + `logs/learn` 接口 |
 | QQ 群 | ✅ 待启用 | NapCat（OneBot v11 HTTP），扫码登录小号 |

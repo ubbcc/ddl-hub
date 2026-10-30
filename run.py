@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ddlhub import db, notify, pipeline, sources  # noqa: E402
+from ddlhub import db, intake, notify, pipeline, sources  # noqa: E402
 
 
 def collect_sources(cfg: dict) -> dict:
@@ -99,6 +99,7 @@ def main() -> None:
     from ddlhub.web.app import app
 
     threading.Thread(target=_scheduler, args=(cfg,), daemon=True).start()
+    intake.start(cfg)
 
     host = args.host or cfg.get("server", {}).get("host", "127.0.0.1")
     port = args.port or int(cfg.get("server", {}).get("port", 8848))

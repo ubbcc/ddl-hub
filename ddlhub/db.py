@@ -94,6 +94,43 @@ def _same_task(a: str, b: str) -> bool:
     return len(short) >= 4 and short in long_
 
 
+_CN_NUM = {
+    "一": "1", "二": "2", "三": "3", "四": "4", "五": "5",
+    "六": "6", "七": "7", "八": "8", "九": "9", "十": "10",
+    "十一": "11", "十二": "12", "十三": "13", "十四": "14", "十五": "15",
+}
+_CHAPTER_RE = re.compile(r"第([一二三四五六七八九十]+)章")
+_NUM_PREFIX_RE = re.compile(r"^(\d+)\s*[.\-、xX]")
+_CATEGORY_RE = re.compile(r"(作业|实验|论文|考试|测验|展示|报告|习题)")
+
+
+def _set_key(title: str) -> str:
+    """把标题归到「第几章 / 第几组」：「第五章作业…」和「5.x 作业」都归到 5。
+
+    作业清单类表格被模型改写标题时（换了措辞、丢了题号），标题对不上但组号对得上。
+    """
+    t = unicodedata.normalize("NFKC", title or "").strip()
+    m = _CHAPTER_RE.search(t)
+    if m:
+        return _CN_NUM.get(m.group(1), m.group(1))
+    m = _NUM_PREFIX_RE.match(t)
+    return m.group(1) if m else ""
+
+
+def _same_day(a: str | None, b: str | None) -> bool:
+    """两个 due_at 是否落在同一自然日。
+
+    模型对「晚上12点前」这种说法会在当天 00:00 和 23:59 之间摆动，
+    同一天内只差钟点不算改期，否则每次重录都会收到一条假的「改期」。
+    """
+    if not a or not b:
+        return False
+    try:
+        return datetime.fromisoformat(a).date() == datetime.fromisoformat(b).date()
+    except (TypeError, ValueError):
+        return False
+
+
 def fingerprint(title: str, course: str | None) -> str:
     """只按标题+课程取指纹：改期时能命中同一条并更新截止时间。"""
     raw = f"{_norm(course or '')}::{_norm_title(title)}"
@@ -129,6 +166,29 @@ def add_messages(conn: sqlite3.Connection, items: list[dict]) -> int:
     return added
 
 
+def has_file_message(conn: sqlite3.Connection, source: str, chat: str, name: str) -> bool:
+    """这个群里同名文件是否已经解析并入库过，用来避免每天重新下载和解析。
+
+    用 Python 侧前缀比较而不是 SQL LIKE：文件名里的 `_` 和 `%` 在 LIKE 里是通配符。
+    """
+    prefix = f"file:{source}:{chat}:{name}:"
+    rows = conn.execute(
+        "SELECT msg_uid FROM messages WHERE source = ? AND chat = ? AND msg_uid LIKE 'file:%'",
+        (source, chat),
+    ).fetchall()
+    return any(str(r[0]).startswith(prefix) for r in rows)
+
+
+def drop_placeholder(conn: sqlite3.Connection, source: str, chat: str, name: str) -> int:
+    """删掉同名群文件的「未解析」占位行（同一文件后来解析成功了）。"""
+    cur = conn.execute(
+        "DELETE FROM messages WHERE source = ? AND chat = ? AND content = ?",
+        (source, chat, f"【群文件】{name}（未解析）"),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def pending_messages(conn: sqlite3.Connection, limit: int = 500) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM messages WHERE extracted = 0 ORDER BY id LIMIT ?", (limit,)
@@ -142,8 +202,29 @@ def mark_extracted(conn: sqlite3.Connection, ids: list[int]) -> None:
     conn.commit()
 
 
+def messages_by_uids(conn: sqlite3.Connection, uids: list[str]) -> list[dict]:
+    """按 msg_uid 取回刚入库的消息行（Telegram 录入回执要拿 id 去抽取）。"""
+    uids = [u for u in uids if u]
+    if not uids:
+        return []
+    marks = ",".join("?" * len(uids))
+    rows = conn.execute(
+        f"SELECT * FROM messages WHERE msg_uid IN ({marks}) ORDER BY id", tuple(uids)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def upsert_task(conn: sqlite3.Connection, t: dict) -> str:
     """返回 created / updated / unchanged。"""
+    return upsert_task_detail(conn, t)["action"]
+
+
+def upsert_task_detail(conn: sqlite3.Connection, t: dict) -> dict:
+    """同 upsert_task，但把合并细节一起带回来，供回执展示。
+
+    返回 {"action", "task_id", "title", "course", "due_at", "previous_due"}。
+    previous_due 只在改期时有值。
+    """
     fp = fingerprint(t["title"], t.get("course"))
     ts = now_iso()
     due = t.get("due_at")
@@ -154,6 +235,8 @@ def upsert_task(conn: sqlite3.Connection, t: dict) -> str:
         # "实验报告3（延期至11月10日）"这类被模型加了注释尾巴的情况。
         wanted = _norm_title(t["title"])
         wanted_course = _norm(t.get("course") or "")
+        wanted_set = _set_key(t["title"])
+        wanted_cat = _CATEGORY_RE.search(t["title"])
         for cand in conn.execute("SELECT * FROM tasks WHERE status = 'open'").fetchall():
             cand_course = _norm(cand["course"] or "")
             if wanted_course and cand_course and wanted_course != cand_course:
@@ -161,9 +244,20 @@ def upsert_task(conn: sqlite3.Connection, t: dict) -> str:
             if _same_task(wanted, _norm_title(cand["title"])):
                 row = cand
                 break
+            # 同课程 + 同截止日 + 同一组号：同一条作业被模型换了个说法
+            if not (wanted_set and wanted_set == _set_key(cand["title"])):
+                continue
+            if (cand["due_at"] or None) != (due or None):
+                continue
+            cand_cat = _CATEGORY_RE.search(cand["title"] or "")
+            # 「第五章作业」和「第五章实验报告」不是一回事，类别不同就不合并
+            if wanted_cat and cand_cat and wanted_cat.group(1) != cand_cat.group(1):
+                continue
+            row = cand
+            break
 
     if row is None:
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO tasks (fingerprint, title, course, kind, due_at, due_text, confidence,"
             " evidence, source, source_ref, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
@@ -182,17 +276,33 @@ def upsert_task(conn: sqlite3.Connection, t: dict) -> str:
             ),
         )
         conn.commit()
-        return "created"
+        return {
+            "action": "created",
+            "task_id": cur.lastrowid,
+            "title": t["title"],
+            "course": t.get("course"),
+            "due_at": due,
+            "previous_due": None,
+        }
 
-    if (row["due_at"] or None) == (due or None):
-        # 内容没变，只补全缺失字段
+    base = {
+        "task_id": row["id"],
+        "title": row["title"],
+        "course": row["course"] or t.get("course"),
+        "due_at": due,
+        "previous_due": None,
+    }
+
+    if (row["due_at"] or None) == (due or None) or _same_day(row["due_at"], due):
+        # 内容没变，只补全缺失字段；同一天内只差钟点的浮动直接对齐，不算改期
         conn.execute(
-            "UPDATE tasks SET confidence = COALESCE(?, confidence), evidence = COALESCE(?, evidence),"
-            " course = COALESCE(course, ?), due_text = COALESCE(due_text, ?), updated_at = ? WHERE id = ?",
-            (t.get("confidence"), t.get("evidence"), t.get("course"), t.get("due_text"), ts, row["id"]),
+            "UPDATE tasks SET due_at = COALESCE(?, due_at), confidence = COALESCE(?, confidence),"
+            " evidence = COALESCE(?, evidence), course = COALESCE(course, ?),"
+            " due_text = COALESCE(due_text, ?), updated_at = ? WHERE id = ?",
+            (due, t.get("confidence"), t.get("evidence"), t.get("course"), t.get("due_text"), ts, row["id"]),
         )
         conn.commit()
-        return "unchanged"
+        return {**base, "action": "unchanged"}
 
     history = json.loads(row["history"] or "[]")
     history.append({"at": ts, "from": row["due_at"], "to": due, "why": t.get("evidence", "")[:120]})
@@ -203,7 +313,7 @@ def upsert_task(conn: sqlite3.Connection, t: dict) -> str:
         (due, t.get("due_text"), t.get("confidence"), t.get("evidence"), json.dumps(history, ensure_ascii=False), ts, row["id"]),
     )
     conn.commit()
-    return "updated"
+    return {**base, "action": "updated", "previous_due": row["due_at"]}
 
 
 def list_tasks(conn: sqlite3.Connection, status: str = "open") -> list[dict]:

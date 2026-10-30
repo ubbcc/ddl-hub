@@ -16,6 +16,14 @@ notify:
     token: ""              # 找 @BotFather 建机器人拿 token
     chat_id: ""            # 你的 Telegram user id
 
+intake:
+  # 手动录入：向 bot 发 /add_homework，再发作业消息/截图，/done 解析入看板。
+  # 必须是**另一个** bot——和上面 notify 用的那个共用会互相抢 update。
+  enabled: false
+  token: ""
+  session_timeout_minutes: 30   # 录入会话多久没动静就作废
+  allowed_chat_ids: []          # 留空=只接受 notify.telegram.chat_id
+
 sources:
   yuketang:
     enabled: false
