@@ -160,6 +160,8 @@ NapCat v4.18.28 的 `packetBackend` 不支持 QQ 构建 `9.9.36-53644-x64`
 - [x] 改期写进 `history`，`done` 的任务改期后自动重开，`confidence` 抬到 0.9
 - [x] 看板卡片加「编辑 / 补截止时间」弹窗，时间填上后自动归到对应分组
 - [x] Telegram `/list` `/set <id> <字段> <值>` `/clear <id> due`
+- [x] 催作业相关：`/done_homework <id>` 标记完成，`/undone_homework <id>` 撤回误点；
+      `/list done` 列出已完成的以便找编号
 - [x] 时间解析：确定性解析先行（11-25 / 11月25日 / 明天 23:59），再来 `llm.parse_due` 兜底
 - [x] 顺带修 `llm._clean_due` 用机器时区的问题，改成 `db.TZ`
 - [x] `.ics` 的 UID 从指纹改成 `task id`，改标题不再让日历当成新事件

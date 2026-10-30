@@ -36,8 +36,11 @@ DONE_CMDS = {"done", "ok", "好", "完成"}
 CANCEL_CMDS = {"cancel", "取消", "abort"}
 HELP_CMDS = {"help", "start", "帮助"}
 LIST_CMDS = {"list", "ls", "列表"}
+DONE_HW_CMDS = {"done_homework"}
+UNDONE_HW_CMDS = {"undone_homework"}
 
 KIND_CHOICES = ["作业", "小测", "考试", "实验", "论文", "展示", "其他"]
+_STATUS_LABEL = {"open": "未完成", "done": "已完成", "ignored": "已忽略"}
 FIELD_ALIASES = {
     "due": "due_at", "due_at": "due_at", "time": "due_at", "截止": "due_at", "时间": "due_at",
     "title": "title", "标题": "title",
@@ -48,10 +51,11 @@ FIELD_ALIASES = {
 
 HELP_TEXT = (
     "录入：/add_homework → 发作业消息、截图或文件 → /done 解析。中途 /cancel 丢弃。\n"
-    "查看：/list 列出未完成作业和编号\n"
+    "查看：/list 列出未完成作业和编号；/list done 看已完成的\n"
     "修改：/set <编号> <字段> <值>，字段是 due / title / course / kind\n"
     "　　　例：/set 12 due 明天 23:59\n"
-    "清空：/clear <编号> due（把截止时间改回待确认）"
+    "清空：/clear <编号> due（把截止时间改回待确认）\n"
+    "完成：/done_homework <编号>；点错了用 /undone_homework <编号> 撤回"
 )
 
 
@@ -424,18 +428,34 @@ def _parse_id(raw: str) -> int | None:
     return int(s) if s.isdigit() else None
 
 
-def _cmd_list(token: str, chat_id: str) -> None:
+_LIST_FILTERS = {
+    "": ("open", "未完成作业"),
+    "open": ("open", "未完成作业"),
+    "todo": ("open", "未完成作业"),
+    "done": ("done", "已完成作业"),
+    "finished": ("done", "已完成作业"),
+    "all": ("", "全部作业"),
+}
+
+
+def _cmd_list(token: str, chat_id: str, rest: str = "") -> None:
+    key = (rest or "").strip().lower()
+    status, label = _LIST_FILTERS.get(key, _LIST_FILTERS[""])
+    if key and key not in _LIST_FILTERS:
+        _send(token, chat_id, "用法：/list 或 /list done 或 /list all")
+        return
+
     conn = db.connect()
     try:
-        tasks = db.list_tasks(conn, "open")
+        tasks = db.list_tasks(conn, status)
     finally:
         conn.close()
 
     if not tasks:
-        _send(token, chat_id, "当前没有未完成的作业。")
+        _send(token, chat_id, f"当前没有{label}。")
         return
 
-    lines = [f"📋 未完成作业（{len(tasks)}）", ""]
+    lines = [f"📋 {label}（{len(tasks)}）", ""]
     for t in tasks[:15]:
         head = f"#{t['id']} {t['title']}"
         if t.get("course"):
@@ -445,7 +465,10 @@ def _cmd_list(token: str, chat_id: str) -> None:
     if len(tasks) > 15:
         lines.append(f"…还有 {len(tasks) - 15} 条")
     lines.append("")
-    lines.append("改时间：/set 12 due 明天 23:59")
+    if status == "done":
+        lines.append("撤回：/undone_homework 12")
+    else:
+        lines.append("完成：/done_homework 12　改时间：/set 12 due 明天 23:59")
     _send(token, chat_id, "\n".join(lines))
 
 
@@ -555,6 +578,48 @@ def _cmd_clear(token: str, chat_id: str, rest: str) -> None:
     _confirm(token, chat_id, result)
 
 
+def _cmd_mark(token: str, chat_id: str, rest: str, done: bool) -> None:
+    """把一条作业标记完成 / 撤回。撤回是给误点准备的。
+
+    只允许 open → done、done → open；已忽略的作业两边都不动，免得把状态搞乱。
+    """
+    tid = _parse_id(rest.split(maxsplit=1)[0] if rest.strip() else "")
+    if tid is None:
+        usage = "/done_homework 12" if done else "/undone_homework 12"
+        _send(token, chat_id, f"用法：{usage}（编号用 /list 查）")
+        return
+
+    target = "done" if done else "open"
+    source = "open" if done else "done"
+    state_word = "完成" if done else "待办"
+    origin_word = "未完成" if done else "已完成"
+
+    conn = db.connect()
+    try:
+        row = conn.execute("SELECT id, title, status FROM tasks WHERE id = ?", (tid,)).fetchone()
+        if row is None:
+            _send(token, chat_id, f"⚠️ #{tid} 不存在，先用 /list 看编号")
+            return
+        title = row["title"]
+        status = row["status"]
+        if status == target:
+            _send(token, chat_id, f"ℹ️ #{tid} {title} 已经是{state_word}状态，没改动")
+            return
+        if status != source:
+            label = _STATUS_LABEL.get(status, status)
+            _send(token, chat_id,
+                  f"⚠️ #{tid} {title} 当前是「{label}」状态，只能对{origin_word}的作业做这个操作")
+            return
+        db.set_status(conn, tid, target)
+    finally:
+        conn.close()
+
+    if done:
+        _send(token, chat_id, f"✅ #{tid} {title} 已标记完成\n点错了发 /undone_homework {tid}")
+    else:
+        _send(token, chat_id, f"↩️ #{tid} {title} 已恢复为待办")
+
+
 # ---------------------------------------------------------------- 主循环
 
 def _handle(token: str, update: dict, cfg: dict, sessions: dict, timeout_min: int) -> None:
@@ -584,7 +649,15 @@ def _handle(token: str, update: dict, cfg: dict, sessions: dict, timeout_min: in
 
     # 查看/编辑类命令必须在会话分支之前处理，否则录入会话开着时会被当成作业内容吞掉
     if cmd in LIST_CMDS:
-        _cmd_list(token, chat_id)
+        _cmd_list(token, chat_id, rest)
+        return
+
+    if cmd in DONE_HW_CMDS:
+        _cmd_mark(token, chat_id, rest, done=True)
+        return
+
+    if cmd in UNDONE_HW_CMDS:
+        _cmd_mark(token, chat_id, rest, done=False)
         return
 
     if cmd == "set":
@@ -673,7 +746,9 @@ def run_forever(cfg: dict) -> None:
         _api(token, "setMyCommands", {"commands": [
             {"command": "add_homework", "description": "开始录入作业"},
             {"command": "done", "description": "解析并写进看板"},
-            {"command": "list", "description": "列出未完成作业和编号"},
+            {"command": "list", "description": "列出作业和编号（/list done 看已完成）"},
+            {"command": "done_homework", "description": "标记某条作业完成：/done_homework 编号"},
+            {"command": "undone_homework", "description": "撤回误点的完成：/undone_homework 编号"},
             {"command": "set", "description": "改作业：/set 编号 字段 值"},
             {"command": "clear", "description": "清空截止时间：/clear 编号 due"},
             {"command": "cancel", "description": "丢弃本轮录入"},
