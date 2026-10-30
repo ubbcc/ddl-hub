@@ -462,7 +462,16 @@ def _confirm(token: str, chat_id: str, result: dict, reopened: bool = False) -> 
     _send(token, chat_id, "\n".join(lines))
 
 
-def _cmd_set(token: str, chat_id: str, rest: str) -> None:
+def _llm_provider(cfg: dict):
+    """配置坏了就返回 None，调用方退回到确定性解析，不要因为模型挂了就改不了作业。"""
+    try:
+        return llm.build_provider(cfg.get("llm") or {})
+    except Exception as e:
+        print(f"[intake] 构造模型失败：{e}")
+        return None
+
+
+def _cmd_set(token: str, chat_id: str, rest: str, cfg: dict) -> None:
     parts = rest.split(maxsplit=2)
     if len(parts) < 3:
         _send(token, chat_id,
@@ -485,7 +494,7 @@ def _cmd_set(token: str, chat_id: str, rest: str) -> None:
         iso = _parse_due(value)
         if iso is None:
             _send(token, chat_id, "⏳ 解析时间中…")
-            iso = llm.parse_due(value, timeout=18)
+            iso = llm.parse_due(value, timeout=18, provider=_llm_provider(cfg))
         if not iso:
             _send(token, chat_id,
                   "这个时间没解析出来。用 2026-11-25 或 11-25 23:59 这种写法；原有时间我没动。")
@@ -579,7 +588,7 @@ def _handle(token: str, update: dict, cfg: dict, sessions: dict, timeout_min: in
         return
 
     if cmd == "set":
-        _cmd_set(token, chat_id, rest)
+        _cmd_set(token, chat_id, rest, cfg)
         return
 
     if cmd == "clear":

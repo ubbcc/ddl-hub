@@ -17,10 +17,18 @@ def load_config(path: Path | str | None = None) -> dict:
         return yaml.safe_load(f) or {}
 
 
+def _provider(cfg: dict, stats: dict):
+    """配置有问题时把原因写进 stats["errors"]，返回 None 让调用方收工。"""
+    try:
+        return llm.build_provider(cfg.get("llm") or {})
+    except llm.ProviderError as e:
+        stats["errors"].append(f"模型配置有问题：{e}")
+        return None
+
+
 def run_extraction(conn=None, config: dict | None = None, limit: int = 500) -> dict:
     cfg = config or load_config()
     llm_cfg = cfg.get("llm", {})
-    backend = llm_cfg.get("backend", "claude-cli")
     timeout = int(llm_cfg.get("timeout_seconds", 240))
     batch_size = max(1, int(llm_cfg.get("batch_size", 60)))
 
@@ -29,6 +37,11 @@ def run_extraction(conn=None, config: dict | None = None, limit: int = 500) -> d
     started = db.now_iso()
     stats = {"messages": 0, "created": 0, "updated": 0, "unchanged": 0, "errors": []}
     try:
+        provider = _provider(cfg, stats)
+        if provider is None:
+            db.log_run(conn, started, False, str(stats["errors"]))
+            return stats
+
         rows = db.pending_messages(conn, limit=limit)
         if not rows:
             db.log_run(conn, started, True, "没有待处理消息")
@@ -39,7 +52,7 @@ def run_extraction(conn=None, config: dict | None = None, limit: int = 500) -> d
 
         for start in range(0, len(msgs), batch_size):
             chunk = msgs[start : start + batch_size]
-            _process_chunk(conn, chunk, backend, timeout, stats)
+            _process_chunk(conn, chunk, provider, timeout, stats)
 
         db.log_run(conn, started, not stats["errors"], str(stats))
         return stats
@@ -48,18 +61,18 @@ def run_extraction(conn=None, config: dict | None = None, limit: int = 500) -> d
             conn.close()
 
 
-def _process_chunk(conn, chunk: list[dict], backend: str, timeout: int, stats: dict) -> None:
+def _process_chunk(conn, chunk: list[dict], provider, timeout: int, stats: dict) -> None:
     """整批失败就二分重试——模型偶尔会返回坏 JSON，把坏样本隔离出来，
     避免一批 60 条里有一条脏数据就全批丢弃。"""
     if not chunk:
         return
     try:
-        tasks = llm.extract_batch(chunk, backend=backend, timeout=timeout)
+        tasks = llm.extract_batch(chunk, provider=provider, timeout=timeout)
     except Exception as e:
         if len(chunk) > 1:
             mid = len(chunk) // 2
-            _process_chunk(conn, chunk[:mid], backend, timeout, stats)
-            _process_chunk(conn, chunk[mid:], backend, timeout, stats)
+            _process_chunk(conn, chunk[:mid], provider, timeout, stats)
+            _process_chunk(conn, chunk[mid:], provider, timeout, stats)
             return
         stats["errors"].append(f"第 {chunk[0].get('id')} 条消息抽取失败：{str(e)[:200]}")
         return
@@ -77,7 +90,6 @@ def extract_rows(conn, rows: list[dict], config: dict | None = None) -> dict:
     """
     cfg = config or load_config()
     llm_cfg = cfg.get("llm", {})
-    backend = llm_cfg.get("backend", "claude-cli")
     timeout = int(llm_cfg.get("timeout_seconds", 240))
     batch_size = max(1, int(llm_cfg.get("batch_size", 60)))
 
@@ -86,26 +98,30 @@ def extract_rows(conn, rows: list[dict], config: dict | None = None) -> dict:
     if not rows:
         return result
 
+    provider = _provider(cfg, result)
+    if provider is None:
+        return result
+
     started = db.now_iso()
     for start in range(0, len(rows), batch_size):
         chunk = rows[start : start + batch_size]
-        _process_chunk_detail(conn, chunk, backend, timeout, result)
+        _process_chunk_detail(conn, chunk, provider, timeout, result)
 
     db.log_run(conn, started, not result["errors"], f"manual: {result['tasks']}")
     return result
 
 
-def _process_chunk_detail(conn, chunk: list[dict], backend: str, timeout: int, result: dict) -> None:
+def _process_chunk_detail(conn, chunk: list[dict], provider, timeout: int, result: dict) -> None:
     """_process_chunk 的兄弟版本：失败时二分重试，成功时把 upsert 细节收集起来。"""
     if not chunk:
         return
     try:
-        tasks = llm.extract_batch(chunk, backend=backend, timeout=timeout)
+        tasks = llm.extract_batch(chunk, provider=provider, timeout=timeout)
     except Exception as e:
         if len(chunk) > 1:
             mid = len(chunk) // 2
-            _process_chunk_detail(conn, chunk[:mid], backend, timeout, result)
-            _process_chunk_detail(conn, chunk[mid:], backend, timeout, result)
+            _process_chunk_detail(conn, chunk[:mid], provider, timeout, result)
+            _process_chunk_detail(conn, chunk[mid:], provider, timeout, result)
             return
         result["errors"].append(f"第 {chunk[0].get('id')} 条消息抽取失败：{str(e)[:200]}")
         return

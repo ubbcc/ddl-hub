@@ -100,35 +100,37 @@ NapCat v4.18.28 的 `packetBackend` 不支持 QQ 构建 `9.9.36-53644-x64`
 - [ ] 看板按 kind 加颜色/图标区分
 - [ ] 统计口径：按 kind 分组计数（哪类作业最多、哪门课最压人）
 
-## 5. LLM 层大改：多 API 支持 + 免费模型配置向导
+## 5. LLM 层大改：多 API 支持 + 免费模型配置向导（✅ 主体完成 2026-10-30）
 
-现状：`ddlhub/llm.py` 只有两个 backend（`claude-cli` / `api`）。`api` 写死了 Anthropic Messages 接口，模型名从环境变量 `DDLHUB_MODEL` 取，每加一家服务商都要改代码。
+`ddlhub/llm.py` 已拆成包 `ddlhub/llm/`，`providers/` 每家一个模块，统一
+`complete(prompt) -> str`；`extract_batch` 只管组 prompt + 解析结果。
 
-- [ ] 抽 provider 层：`ddlhub/llm/providers/` 每家一个模块，统一 `complete(prompt) -> str`，`extract_batch` 只负责组 prompt + 解析结果
-- [ ] 优先做 OpenAI 兼容协议，一个实现覆盖大多数服务商：DeepSeek / 智谱 GLM / 硅基流动 / 月之暗面 / 通义 / 本地 Ollama、vLLM、LM Studio；配置只要 base_url + api_key + model
-- [ ] 保留 `claude-cli` 为默认（本机零配置、零额外成本）；原 `api` 重命名为 `anthropic`
-- [ ] `config.yaml` 从单个字符串改成 provider 块：
-  ```yaml
-  llm:
-    provider: claude-cli      # claude-cli | anthropic | openai-compat
-    base_url:                 # openai-compat 必填
-    api_key:                  # 也可从环境变量 DDLHUB_API_KEY 读
-    model:
-    timeout_seconds: 240
-    batch_size: 60
-  ```
-- [ ] 配置向导 `python -m ddlhub.setup_llm`：交互选服务商 → 填 key/base_url → 发一条探测请求验证连通与 JSON 服从性 → 写回 config.yaml
-- [ ] 开发者推荐免费 LLM，写进向导首屏和 README：
-  - 首选 `claude-cli`（项目默认，无需任何 key）
-  - 硅基流动 SiliconFlow：注册送额度，Qwen / GLM 小模型有免费档
-  - 智谱 GLM-4-Flash：长期免费
-  - Google Gemini Flash：有免费额度
-  - DeepSeek：几乎免费
-  - 本地 Ollama / LM Studio：完全离线，但要机器扛得住
-  - 说明：免费模型「只输出 JSON」的服从性差，靠 `_extract_json_array` 的宽松解析兜底
-- [ ] 启动自检：provider 不可用时给明确报错，而不是每天定时任务静默失败
-- [ ] 横向评测：拿 A/B 组测试用例当基准（见下方「测试用例」），同一批消息跑各家，比对抽取准确率与耗时，结果写进 README
+- [x] provider 层：`providers/{claude_cli,anthropic,openai_compat,openrouter,siliconflow}.py`
+- [x] OpenAI 兼容一份实现覆盖 DeepSeek / 智谱 / 硅基流动 / 月之暗面 / 通义 / 本地 Ollama、vLLM、LM Studio
+- [x] `claude-cli` 保留为零配置兜底；原 `backend: api` 自动映射到 `anthropic`
+- [x] `config.yaml` 改成 provider 块，老配置的 `backend:` 仍认（`ALIASES`）
+- [x] **硅基流动设为默认**（`provider: siliconflow`，base_url 内置 `https://api.siliconflow.cn/v1`，
+      key 读 `SILICONFLOW_API_KEY`）。默认模型暂填 `deepseek-ai/DeepSeek-V3`——
+      **未验证**，硅基流动的模型列表接口要 key 才能拉，跑向导时按官方控制台改
+- [x] OpenRouter 支持：带 `HTTP-Referer`/`X-Title`，`reasoning: false` 时发
+      `{"reasoning": {"enabled": false}}` 关掉深度思考
+- [x] 配置向导 `python -m ddlhub.setup_llm`：选服务商 → 填 key（getpass 不回显）→
+      探测连通 + JSON 服从性 → 写回 config.yaml（只替换 `llm:` 段，其它注释原样保留，改前备份 `.yaml.bak`）
+- [x] 启动自检：provider 不可用时 `stats["errors"]` 里给明确原因，不再静默失败
+- [ ] **横向评测**：用 `prompt_test.md` 的 9 条用例跑各家，比对准确率与耗时，结果写进 README
+      - **SiliconFlow / deepseek-ai/DeepSeek-V3**（2026-10-30）：30s，10 条，必答 9 条日期全对
+        （含「下周三」→11-04、「晚上12点」→11-20、「国庆之后」→null）；表格 5 行全出、
+        格内换行没拆；误抽 0。问题：`course` 8 条照抄群名（电工学全部中招）；idx1 抽了但给 0.9（应 ≤0.5）；
+        2.x due=null 却给 0.7（规则 5 要求 ≤0.4）
+      - **qwen3-vl-instruct**：9 条，表格/换行全对；但「下周三」算成 11-03（错一天）、
+        `course` 同样照抄群名、due=null 给 0.7
+      - 结论：日期准确性 DeepSeek-V3 更好；`course` 两个模型都错，**必须做后处理**
 - [ ] 成本与限流：把每次调用的 token 数与耗时记进 `runs` 表，方便挑模型
+- [x] `course` 归一化：`db.normalize_course()` 剥掉「2026秋」「…群」「…通知」这类前后缀，
+      指纹只算归一后的课程名（2026-10-30，回归见下）
+- [x] 修「抽取没给出时间时把已有时间抹掉」：`due=None` 不再覆盖已有 `due_at`
+      （手动补的日期不会被后面没抽到时间的重跑清掉）
+- [ ] 支持 `response_format: json_object`（OpenRouter/OpenAI 兼容层有 `structured_outputs`）
 
 风险点：不同模型对结构化输出的服从度差异很大，弱模型可能要给 per-provider 追加 few-shot 示例；`_clean_due` 的年份窗口、`idx` 校验这些后处理要保持 provider 无关。
 

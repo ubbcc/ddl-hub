@@ -3,10 +3,22 @@ server:
   port: 8848
 
 llm:
-  # claude-cli: 复用本机 claude 命令，无需额外 API key
-  backend: claude-cli
+  # provider: claude-cli | siliconflow | openrouter | deepseek | anthropic | openai-compat
+  #   siliconflow   默认：硅基流动，国内直连，base_url 已内置
+  #   claude-cli    复用本机 claude 命令，零配置零额外成本
+  #   openrouter    模型例 deepseek/deepseek-v4-flash，reasoning: false 关掉深度思考
+  #   deepseek      deepseek 官方 API
+  #   openai-compat 其它 OpenAI 兼容服务（智谱 / Ollama / vLLM…），必须填 base_url
+  provider: siliconflow
+  model: "deepseek-ai/DeepSeek-V3"      # 硅基流动的模型 id 带前缀，按官方文档填
+  base_url: ""           # 留空用 provider 的默认地址；openai-compat 必填
+  api_key: ""            # 留空则读 SILICONFLOW_API_KEY / OPENROUTER_API_KEY / DEEPSEEK_API_KEY / DDLHUB_API_KEY
   timeout_seconds: 240
   batch_size: 60
+  temperature: 0
+  max_tokens: 4096
+  reasoning: false       # openrouter 专用：false=不走深度思考
+  # 换配置不用手改：python -m ddlhub.setup_llm
 
 notify:
   daily_time: "08:00"      # 每天几点跑抽取+推送

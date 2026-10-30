@@ -104,6 +104,44 @@ Telegram 的命令名只允许字母数字下划线，所以 BotFather 菜单里
 **已知限制**：自动抽取对截止时间是权威的。手动改过的截止时间，之后若又有新消息被抽取到
 同一条作业，仍会被覆盖；改课程名可能让之后的抽取对不上而产生重复条目。标题不会被覆盖。
 
+## 换模型
+
+抽取走哪家模型由 `config.yaml` 的 `llm:` 段决定，换一家不用改代码：
+
+```yaml
+llm:
+  provider: siliconflow                # siliconflow | claude-cli | openrouter | deepseek | anthropic | openai-compat
+  model: deepseek-ai/DeepSeek-V3       # 硅基流动的模型 id 带前缀
+  base_url: ""                         # 留空用 provider 默认地址；openai-compat 必填
+  api_key: ""                          # 留空则读 SILICONFLOW_API_KEY / OPENROUTER_API_KEY / DEEPSEEK_API_KEY / DDLHUB_API_KEY
+  timeout_seconds: 240
+  batch_size: 60
+  temperature: 0
+  max_tokens: 4096
+  reasoning: false                     # openrouter 专用：false = 不走深度思考
+```
+
+不想手改就用向导，它会发一条探测请求验证连通和 JSON 服从性，通过才写回配置：
+
+```bash
+python -m ddlhub.setup_llm
+```
+
+| provider | 需要什么 | 说明 |
+|---|---|---|
+| `siliconflow` | 硅基流动 key | **默认**：国内直连，注册送额度，Qwen / GLM / DeepSeek 都有 |
+| `claude-cli` | 装了 Claude Code | 零配置兜底，不花钱 |
+| `openrouter` | OpenRouter key | `deepseek/deepseek-v4-flash`，1M 上下文，可关深度思考 |
+| `deepseek` | DeepSeek key | 官方 API，模型名以官方文档为准 |
+| `anthropic` | Anthropic key | 原 `backend: api` |
+| `openai-compat` | key + `base_url` | 智谱 GLM、月之暗面、通义，以及本地 Ollama / vLLM / LM Studio（本地服务可不填 key） |
+
+**已知短板**：小模型对长指令的服从性差，最典型的是 `course` 照抄群名（`2026秋电工学`
+而不是 `电工学`）。这种前缀现在由 `db.normalize_course()` 统一剥掉——群名式前后缀
+（`2026秋…`、`…群`、`…通知`）都会去掉，指纹里也只算归一后的课程名，所以新旧数据不会分叉。
+另一个坑是日期不确定时仍给高置信度，这个没有后处理，靠看板上的「时间待确认」分组兜。
+换模型后建议先跑 `prompt_test.md` 里的用例对一遍。
+
 ## 数据源
 
 | 来源 | 状态 | 接入方式 |

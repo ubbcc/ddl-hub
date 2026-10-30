@@ -131,9 +131,30 @@ def _same_day(a: str | None, b: str | None) -> bool:
         return False
 
 
+_COURSE_PREFIX_RE = re.compile(r"^\s*(?:20\d{2}\s*(?:[-—~]\s*20\d{2}\s*)?)\s*[春秋夏冬季]?季?\s*")
+_COURSE_SUFFIX_RE = re.compile(r"\s*(?:通知群|交流群|课程群|班群|作业群|群|通知|交流)\s*$")
+
+
+def normalize_course(course: str | None) -> str | None:
+    """把群名/学期前缀从课程名里剥掉。
+
+    模型经常把群名当课程名填：`2026秋电工学` → `电工学`、`工程热力学群` → `工程热力学`。
+    不统一的话，指纹里课程这一半对不上，同一份作业会抽成两条。
+    """
+    if not course:
+        return None
+    # 不做 NFKC：那会把全角括号改成半角，存进去的课程名会跟历史数据不一致。
+    # 归一化比较交给 fingerprint() 里的 _norm()。
+    t = str(course).strip()
+    t = _COURSE_PREFIX_RE.sub("", t, count=1)
+    t = _COURSE_SUFFIX_RE.sub("", t, count=1)
+    t = t.strip(" -—_·、,，")
+    return t or None
+
+
 def fingerprint(title: str, course: str | None) -> str:
     """只按标题+课程取指纹：改期时能命中同一条并更新截止时间。"""
-    raw = f"{_norm(course or '')}::{_norm_title(title)}"
+    raw = f"{_norm(normalize_course(course) or '')}::{_norm_title(title)}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -225,7 +246,8 @@ def upsert_task_detail(conn: sqlite3.Connection, t: dict) -> dict:
     返回 {"action", "task_id", "title", "course", "due_at", "previous_due"}。
     previous_due 只在改期时有值。
     """
-    fp = fingerprint(t["title"], t.get("course"))
+    course = normalize_course(t.get("course"))
+    fp = fingerprint(t["title"], course)
     ts = now_iso()
     due = t.get("due_at")
     row = conn.execute("SELECT * FROM tasks WHERE fingerprint = ?", (fp,)).fetchone()
@@ -234,11 +256,11 @@ def upsert_task_detail(conn: sqlite3.Connection, t: dict) -> dict:
         # 指纹没命中时，再按标题主体做一次包含式匹配，兜住"实验报告3"与
         # "实验报告3（延期至11月10日）"这类被模型加了注释尾巴的情况。
         wanted = _norm_title(t["title"])
-        wanted_course = _norm(t.get("course") or "")
+        wanted_course = _norm(course or "")
         wanted_set = _set_key(t["title"])
         wanted_cat = _CATEGORY_RE.search(t["title"])
         for cand in conn.execute("SELECT * FROM tasks WHERE status = 'open'").fetchall():
-            cand_course = _norm(cand["course"] or "")
+            cand_course = _norm(normalize_course(cand["course"]) or "")
             if wanted_course and cand_course and wanted_course != cand_course:
                 continue
             if _same_task(wanted, _norm_title(cand["title"])):
@@ -263,7 +285,7 @@ def upsert_task_detail(conn: sqlite3.Connection, t: dict) -> dict:
             (
                 fp,
                 t["title"],
-                t.get("course"),
+                course,
                 t.get("kind"),
                 due,
                 t.get("due_text"),
@@ -280,7 +302,7 @@ def upsert_task_detail(conn: sqlite3.Connection, t: dict) -> dict:
             "action": "created",
             "task_id": cur.lastrowid,
             "title": t["title"],
-            "course": t.get("course"),
+            "course": course,
             "due_at": due,
             "previous_due": None,
         }
@@ -288,18 +310,21 @@ def upsert_task_detail(conn: sqlite3.Connection, t: dict) -> dict:
     base = {
         "task_id": row["id"],
         "title": row["title"],
-        "course": row["course"] or t.get("course"),
+        "course": row["course"] or course,
         "due_at": due,
         "previous_due": None,
     }
 
-    if (row["due_at"] or None) == (due or None) or _same_day(row["due_at"], due):
+    # 这次没抽出截止时间（due=None）时不要把已有的时间抹掉——
+    # 那条时间可能是用户手动填的（「时间待确认」的作业补上日期后，又重跑了一次抽取）
+    keep_due = due is None and bool(row["due_at"])
+    if (row["due_at"] or None) == (due or None) or _same_day(row["due_at"], due) or keep_due:
         # 内容没变，只补全缺失字段；同一天内只差钟点的浮动直接对齐，不算改期
         conn.execute(
             "UPDATE tasks SET due_at = COALESCE(?, due_at), confidence = COALESCE(?, confidence),"
             " evidence = COALESCE(?, evidence), course = COALESCE(course, ?),"
             " due_text = COALESCE(due_text, ?), updated_at = ? WHERE id = ?",
-            (due, t.get("confidence"), t.get("evidence"), t.get("course"), t.get("due_text"), ts, row["id"]),
+            (due, t.get("confidence"), t.get("evidence"), course, t.get("due_text"), ts, row["id"]),
         )
         conn.commit()
         return {**base, "action": "unchanged"}
@@ -431,6 +456,8 @@ def update_task(
         if f in fields:
             v = fields[f]
             v = "" if v is None else str(v).strip()
+            if f == "course":
+                v = normalize_course(v) or ""
             new[f] = (v or None)
         elif f in clear:
             new[f] = None

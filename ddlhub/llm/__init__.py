@@ -1,15 +1,28 @@
-"""用 LLM 从聊天消息里抽作业截止时间。"""
+"""用 LLM 从聊天消息里抽作业截止时间。
+
+这里只负责「组 prompt + 解析结果」，具体怎么调模型交给 providers/：
+  siliconflow  硅基流动，默认（国内直连、OpenAI 兼容）
+  claude-cli   本机 claude 命令，零配置
+  openrouter   OpenRouter（deepseek/deepseek-v4-flash，可关深度思考）
+  deepseek     DeepSeek 官方
+  anthropic    Anthropic Messages API
+  openai-compat 其他 OpenAI 兼容服务（智谱 / 本地 Ollama、vLLM…）
+"""
 
 from __future__ import annotations
 
 import json
 import re
-import subprocess
 from datetime import datetime
 
-from .db import TZ
+from .providers import Provider, ProviderError, build as _build_provider
+from ..db import TZ  # noqa: F401  (为了向后兼容，老代码 from .llm import TZ 也能用)
 
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+# 单条消息送进模型的字符上限。PPT/图片解析出来的一整页文字常常上千字，
+# 作业条款可能就在后半段，所以别截得太狠。
+MAX_MSG_CHARS = 1200
 
 SYSTEM_PROMPT = """你是作业截止时间抽取器。今天是 {today}（{weekday}），时区 Asia/Shanghai (+08:00)。
 
@@ -33,22 +46,24 @@ SYSTEM_PROMPT = """你是作业截止时间抽取器。今天是 {today}（{week
 9. 若消息里截止时间后面带了「（学期末）」「（长期限）」这类短标注，说明这个时间很可能是
    系统默认值而不是老师设的。这种情况仍然要输出这条作业，但要把这 3-4 字标注原样放在
    标题最前面，格式如「学期末 第十二章积极自我」，并把 confidence 压到 0.5 以下。
-10. 消息可能是被拍平的表格或作业清单，形如「2026-09-14 ⏎ 1.3、1.4、1.5 ⏎ 2026-09-21 ⏎
-    2026-09-28 ⏎ 2.4、2.5 ⏎ …」，三个一组「布置日 / 题目 / 提交截止日」。这种内容里
-    每一组都是一条独立作业，必须逐条输出，不许只取最后一条，也不许把多组合并成一条。
+10. 消息可能是被拍平的表格或作业清单（Word 表格解析后，单元格边框没了，单元格之间和
+    单元格内部的换行都变成了 ⏎）。必须靠语义区分两种换行：
+    - 单元格之间：下一行是日期（2026-09-14 / 9月14日），或明显换了一列的内容；
+    - 单元格内部软换行：上一行以「、」「，」「,」这类连接符结尾还没列完，或者下一行是
+      上一行列表的续写。
+    典型陷阱——这几行其实是「布置日 / 题目 / 截止日」三个格子（题目格中途换行了）：
+      2026-09-28 ⏎ 2.4、2.5、2.7、2.9、2.13、 ⏎ 2.16、2.22 ⏎ 国庆之后
+    正确理解是 布置日=2026-09-28、题目=2.4…2.22、截止=国庆之后，
+    不是四行四列，也不能把「2.16、2.22」当成新的截止日。
+    这种清单里每一组都是一条独立作业，必须逐条输出，不许只取最后一条，也不许合并。
     题目没写「第几章」时，用题号前缀（如「1.x 作业」「2.x 作业」）区分 title。
-    表格里没有截止日的行（如「国庆之后」）due_at 填 null，due_text 保留原话。
+    截止格不是正常日期的（如「国庆之后」）due_at 填 null，due_text 保留原话。
 
 只输出 JSON 数组，不要解释，不要 markdown 代码块。每个元素字段：
 {{"idx": 序号, "title": "", "course": null, "kind": "作业", "due_at": null, "due_text": "原话片段", "confidence": 0.0, "evidence": "触发该事项的原文，<=60字"}}
 
 没有符合条件的事项就输出 []。
 """
-
-
-# 单条消息送进模型的字符上限。PPT/图片解析出来的一整页文字常常上千字，
-# 作业条款可能就在后半段，所以别截得太狠。
-MAX_MSG_CHARS = 1200
 
 
 def _fmt_msg(m: dict, idx: int) -> str:
@@ -86,58 +101,35 @@ def _extract_json_array(text: str) -> list:
     return []
 
 
-def _call_claude_cli(prompt: str, timeout: int) -> str:
-    proc = subprocess.run(
-        ["claude", "-p", "--output-format", "text"],
-        input=prompt,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        shell=False,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"claude cli 退出码 {proc.returncode}: {(proc.stderr or '')[:500]}")
-    return proc.stdout
+def build_provider(cfg: dict | None = None) -> Provider:
+    """按 config 的 llm 段造 provider。配置坏就直接抛 ProviderError。"""
+    return _build_provider(cfg)
 
 
-def _call_anthropic_api(prompt: str, timeout: int) -> str:
-    import os
-
-    import requests
-
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not key:
-        raise RuntimeError("未设置 ANTHROPIC_API_KEY")
-    resp = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "x-api-key": key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        json={
-            "model": os.environ.get("DDLHUB_MODEL", "claude-sonnet-5-5"),
-            "max_tokens": 4096,
-            "messages": [{"role": "user", "content": prompt}],
-        },
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return "".join(b.get("text", "") for b in data.get("content", []))
-
-
-def extract_batch(messages: list[dict], backend: str = "claude-cli", timeout: int = 240) -> list[dict]:
+def extract_batch(
+    messages: list[dict],
+    provider: Provider | str | None = None,
+    timeout: int = 240,
+    *,
+    backend: str | None = None,
+) -> list[dict]:
+    """backend 是旧参数，留着一行兼容；新代码传 provider（实例或名字）。"""
     if not messages:
         return []
-    today = datetime.now().strftime("%Y-%m-%d")
-    weekday = WEEKDAYS[datetime.now().weekday()]
-    body = "\n".join(_fmt_msg(m, i) for i, m in enumerate(messages))
-    prompt = SYSTEM_PROMPT.format(today=today, weekday=weekday) + "\n消息：\n" + body
+    if provider is None:
+        provider = _build_provider({"provider": backend or "claude-cli"})
+    elif isinstance(provider, str):
+        provider = _build_provider({"provider": provider})
 
-    raw = _call_anthropic_api(prompt, timeout) if backend == "api" else _call_claude_cli(prompt, timeout)
+    now = datetime.now(TZ)
+    body = "\n".join(_fmt_msg(m, i) for i, m in enumerate(messages))
+    prompt = (
+        SYSTEM_PROMPT.format(today=now.strftime("%Y-%m-%d"), weekday=WEEKDAYS[now.weekday()])
+        + "\n消息：\n"
+        + body
+    )
+
+    raw = provider.complete(prompt, timeout)
     items = _extract_json_array(raw)
 
     out = []
@@ -206,7 +198,7 @@ DUE_PROMPT = """把下面这句话里的时间解析成一个 ISO 8601 时间戳
 """
 
 
-def parse_due(text: str, timeout: int = 20) -> str | None:
+def parse_due(text: str, timeout: int = 20, provider: Provider | None = None) -> str | None:
     """把「下周三四点前」这类自然语言解析成 ISO 时间；解析不出返回 None。
 
     只给手动改截止时间用，所以超时压得比抽取短得多，别把调用方卡住。
@@ -220,8 +212,10 @@ def parse_due(text: str, timeout: int = 20) -> str | None:
         text=text.strip()[:200],
     )
     try:
-        raw = _call_claude_cli(prompt, timeout)
-    except Exception:
+        if provider is None:
+            provider = _build_provider({"provider": "claude-cli"})
+        raw = provider.complete(prompt, timeout)
+    except (ProviderError, OSError, RuntimeError):
         return None
     line = (raw or "").strip().strip("`").strip()
     if not line:
