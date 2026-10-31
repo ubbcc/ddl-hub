@@ -11,6 +11,7 @@ llm:
   #   openai-compat 其它 OpenAI 兼容服务（智谱 / Ollama / vLLM…），必须填 base_url
   provider: siliconflow
   model: "deepseek-ai/DeepSeek-V3"      # 硅基流动的模型 id 带前缀，按官方文档填
+  vision_model: ""       # 图片解析用的多模态模型；留空则退回本机 claude 命令
   base_url: ""           # 留空用 provider 的默认地址；openai-compat 必填
   api_key: ""            # 留空则读 SILICONFLOW_API_KEY / OPENROUTER_API_KEY / DEEPSEEK_API_KEY / DDLHUB_API_KEY
   timeout_seconds: 240

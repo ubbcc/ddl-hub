@@ -156,6 +156,59 @@ def _claude_read(path: Path, timeout: int = 180) -> str:
     return text
 
 
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+
+IMAGE_PROMPT = (
+    "逐行原样输出图里的所有文字，包括标题、标签、数字和日期。"
+    "不要总结、不要解释、不要漏行。没有文字就只输出 EMPTY"
+)
+
+
+def _vision_provider():
+    """图片解析用的模型。没配 vision_model 且主模型看着不是多模态，就返回 None。"""
+    from . import llm, pipeline  # 延迟导入：attach 被 sources 引用，避免导入环
+
+    cfg = pipeline.load_config()
+    llm_cfg = dict(cfg.get("llm") or {})
+    vision = str(llm_cfg.get("vision_model") or "").strip()
+    if vision:
+        llm_cfg["model"] = vision
+    elif "vl" not in str(llm_cfg.get("model") or "").lower():
+        return None
+    return llm.build_provider(llm_cfg)
+
+
+def _llm_read(path: Path, timeout: int = 180) -> str:
+    """用 llm 模块里配置的多模态模型读图片。"""
+    provider = _vision_provider()
+    if provider is None:
+        raise UnsupportedFile("没配 vision_model，也没有多模态主模型")
+    if not hasattr(provider, "complete_image"):
+        raise UnsupportedFile(f"{provider.describe()} 不支持读图片")
+    text = (provider.complete_image(IMAGE_PROMPT, path, timeout) or "").strip()
+    if not text or text.upper() == "EMPTY":
+        raise UnsupportedFile("模型没从图里读出文字")
+    return text
+
+
+def _remote_read(path: Path, timeout: int = 180) -> tuple[str, str]:
+    """远端解析：图片先试 llm 模块配置的模型，不行再退回本机 claude 命令。
+
+    返回 (engine, text)；engine 会写进消息头，方便事后判断是哪条路解析出来的。
+    """
+    errors = []
+    if path.suffix.lower() in IMAGE_EXT:
+        try:
+            return "llm-remote", _llm_read(path)
+        except Exception as e:
+            errors.append(f"llm: {e}")
+    try:
+        return "claude-remote", _claude_read(path, timeout)
+    except Exception as e:
+        errors.append(f"claude: {e}")
+    raise UnsupportedFile("远端解析都失败了（" + "；".join(errors)[:250] + "）")
+
+
 def _weak(text: str) -> bool:
     """解析结果是不是不可用：太短，或者有效字符占比过低（二进制乱码、扫描件空文本）。"""
     if len(text) < 20:
@@ -213,9 +266,10 @@ def extract_text(path: Path | str, allow_remote: bool = True) -> dict:
     needs_remote = engine == "" or _weak(text)
     if needs_remote and allow_remote:
         try:
-            alt = _clean(_claude_read(p))
+            alt_engine, alt_raw = _remote_read(p)
+            alt = _clean(alt_raw)
             if engine == "" or len(alt) > len(text):
-                engine, text = "claude-remote", alt
+                engine, text = alt_engine, alt
         except Exception as e:
             if engine == "":
                 raise UnsupportedFile(

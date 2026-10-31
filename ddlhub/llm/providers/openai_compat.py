@@ -69,10 +69,10 @@ class OpenAICompatProvider(Provider):
         body.update(self.extra_body)
         return body
 
-    def complete(self, prompt: str, timeout: int = 240) -> str:
+    def _post(self, payload: dict, timeout: int) -> str:
         url = f"{self.base_url}/chat/completions"
         try:
-            resp = requests.post(url, headers=self._headers(), json=self._payload(prompt), timeout=timeout)
+            resp = requests.post(url, headers=self._headers(), json=payload, timeout=timeout)
         except requests.RequestException as e:
             raise ProviderError(f"连不上 {self.describe()}：{e}") from None
         if resp.status_code >= 400:
@@ -82,3 +82,31 @@ class OpenAICompatProvider(Provider):
             return _content_of(data["choices"][0]["message"])
         except (ValueError, KeyError, IndexError, TypeError) as e:
             raise ProviderError(f"{self.describe()} 返回格式不对：{resp.text[:300]}") from e
+
+    def complete(self, prompt: str, timeout: int = 240) -> str:
+        return self._post(self._payload(prompt), timeout)
+
+    def complete_image(self, prompt: str, image_path, timeout: int = 120) -> str:
+        """把图片以 base64 data URL 发过去。需要模型本身支持看图（Qwen-VL / GLM-4V 等）。"""
+        import base64
+        import mimetypes
+        from pathlib import Path as _Path
+
+        p = _Path(image_path)
+        raw = p.read_bytes()
+        if len(raw) > 8 * 1024 * 1024:
+            raise ProviderError(f"图片太大（{len(raw) / 1024 / 1024:.1f} MB），先压缩")
+        mime = mimetypes.guess_type(p.name)[0] or "image/jpeg"
+        url = "data:{};base64,{}".format(mime, base64.b64encode(raw).decode())
+
+        payload = self._payload(prompt)
+        payload["messages"] = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ],
+            }
+        ]
+        return self._post(payload, timeout)

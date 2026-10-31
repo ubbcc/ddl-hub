@@ -115,6 +115,7 @@ Telegram 的命令名只允许字母数字下划线，所以 BotFather 菜单里
 llm:
   provider: siliconflow                # siliconflow | claude-cli | openrouter | deepseek | anthropic | openai-compat
   model: deepseek-ai/DeepSeek-V3       # 硅基流动的模型 id 带前缀
+  vision_model: ""                     # 图片解析用的多模态模型，留空则用本机 claude 命令
   base_url: ""                         # 留空用 provider 默认地址；openai-compat 必填
   api_key: ""                          # 留空则读 SILICONFLOW_API_KEY / OPENROUTER_API_KEY / DEEPSEEK_API_KEY / DDLHUB_API_KEY
   timeout_seconds: 240
@@ -144,6 +145,11 @@ python -m ddlhub.setup_llm
 （`2026秋…`、`…群`、`…通知`）都会去掉，指纹里也只算归一后的课程名，所以新旧数据不会分叉。
 另一个坑是日期不确定时仍给高置信度，这个没有后处理，靠看板上的「时间待确认」分组兜。
 换模型后建议先跑 `prompt_test.md` 里的用例对一遍。
+
+**截图/图片解析**走 `vision_model`（没配且主模型名字里没有 `vl` 就直接用本机 `claude`
+命令）。硅基流动上实测 `Qwen/Qwen3-VL-8B-Instruct` 可用，单张图 30–60 秒，超时设 180 秒。
+小尺寸 VL 模型容易漏掉界面上的截止日期，提示词要求「逐行原样输出…包括数字和日期」后
+才稳定；如果发现漏字，把这行留空退回 `claude` 更靠谱。
 
 ## 数据源
 
