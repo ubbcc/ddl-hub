@@ -171,6 +171,34 @@ NapCat v4.18.28 的 `packetBackend` 不支持 QQ 构建 `9.9.36-53644-x64`
 已知限制：自动抽取对 `due_at` 是权威的，手动改的时间会被后续抽取覆盖；改课程名可能导致
 之后的抽取匹配不上而重复建条目。
 
+## 8. 智慧树采集（✅ AI 智课可用 2026-10-31）
+
+无官方文档，接口靠抓包 + 开源项目（pjm314159/zhs）逆向。请求体统一
+`AES-128-CBC + PKCS7 → base64` 塞进 `secretStr`，不同接口不同 key。
+
+已实测可用的接口（都用浏览器 Cookie 即可）：
+
+| 用途 | 方法与地址 | key | payload |
+|---|---|---|---|
+| 共享课列表 | POST `onlineservice-api/gateway/t/v1/student/course/share/queryShareCourseInfo` | home | `{status,pageNo,pageSize}`，status=1/3 返进行中 |
+| AI 课程列表 | POST `.../student/queryStudentAICourseList` | home | `{status:3}` |
+| **AI 课程作业** | POST `kg-run-student.zhihuishu.com/student/gateway/t/task/taskList` | **ai** | `{courseId,taskType:1,taskName:"",status:0}`，返 `endTime` |
+| AI 待办任务 | POST `kg-ai-run.zhihuishu.com/run/gateway/t/stu/task/v2/get-exam-todo-tasks` | ai | `{classId,courseId}` |
+| 未提交考试 | GET `.../student/getStudentNoCommitExam` | home | `{}` |
+| 翻转课列表 | GET `hike-teaching-api.../student/online/course/getCourseList` | home | `{pageNum,pageSize}` |
+| 微课/兴趣课 | POST `.../student/course/share/queryMicroCourseInfo` | home | `{pageNo,pageSize}` |
+| 智慧课程 | GET `.../student/course/share/querySelectCourseInfo` | home | `{schoolId}` |
+
+- [x] `ddlhub/sources/zhihuishu.py`，加密常量可被 config 覆盖
+- [x] AI 智课作业入库（实测抓到「蒸气热力性质（第六章）」截止 11-04）
+- [x] 未提交考试接口接上（当前账号为空）
+- [x] **共享课作业已打通**（2026-10-31）：`getStudentHomework` 只要 `{recruitId}`。
+      两个关键点：① CAS 换票后必须用 **POST** 打带 ticket 的地址（接口 POST-only，
+      GET 会 401，会话种不下来）；② Cookie 必须写进 cookie jar，设成请求头会盖掉
+      CAS 新种的 `JSESSIONID`，导致永远 302
+- [ ] 翻转课 / 兴趣课 / 智慧课程的作业接口还没验证（课程列表已能拿到）
+- [ ] Cookie 过期检测（和雨课堂同样的问题）
+
 ## 测试用例（已设计，尚未落文件）
 
 - [ ] A 组 25 条确定性单测（mock 模型输出）：`_extract_json_array` / `_clean_due` / `_clamp` / `_fmt_msg` / `extract_batch` 过滤

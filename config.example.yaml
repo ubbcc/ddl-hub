@@ -51,3 +51,10 @@ sources:
     enabled: false
     mode: wxauto              # manual | wxauto（wxauto 需要微信 3.9.x）
     groups: []                # 要读取的群名，和微信会话列表里显示的完全一致
+  zhihuishu:
+    enabled: false
+    cookie: ""                # 浏览器登录智慧树后复制整条 Cookie
+    # 加密常量，只有站点改版才需要覆盖；留空用内置值
+    home_key: ""
+    ai_key: ""
+    iv: ""

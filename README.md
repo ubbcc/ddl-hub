@@ -155,8 +155,52 @@ python -m ddlhub.setup_llm
 | 雨课堂 | ✅ 可用 | Cookie + `logs/learn` 接口 |
 | QQ 群 | ✅ 待启用 | NapCat（OneBot v11 HTTP），扫码登录小号 |
 | 群文件 | ✅ 可用 | 自动解析群里的 .doc/.docx/.pdf/.pptx/.xlsx |
+| 智慧树 | ✅ 部分可用 | AI 智课作业（带截止时间）；共享课作业待补 |
 
 启用的数据源会在每天 `daily_time` 自动采集；手动跑一次用 `python run.py --collect --once`。
+
+### 智慧树（知到）
+
+```yaml
+zhihuishu:
+  enabled: true
+  cookie: ""      # 浏览器登录智慧树后复制整条 Cookie
+```
+
+**接口来源声明**：智慧树没有任何官方 API 文档，本项目的接口地址、请求字段名和
+客户端加密常量（`iv` / `home_key` / `ai_key` / `exam_key`）参考自以下逆向项目：
+
+- [pjm314159/zhs](https://github.com/pjm314159/zhs) — `docs/spec.md` 的接口说明、
+  `config.toml.example` 的加密常量（该项目为 **GPLv3**）
+- [VermiIIi0n/fuckZHS](https://github.com/VermiIIi0n/fuckZHS) — hike / studyservice 两套
+  接口体系的逆向笔记
+
+本项目**没有复制上述项目的源码**，`ddlhub/sources/zhihuishu.py` 是独立实现的：只沿用了
+「哪个地址、发什么字段、用什么常量」这类事实性信息（这些常量本身就是智慧树前端 JS 里
+的硬编码值）。如果你认为这里的引用方式有问题，请开 issue。
+
+请求体是 `AES-128-CBC + PKCS7 → base64`，塞进 `secretStr`；不同接口用不同 key
+（内置在 `ddlhub/sources/zhihuishu.py` 的 `DEFAULT_KEYS`，站点改版就在 config 里覆盖
+`home_key` / `ai_key` / `iv`）。
+
+当前覆盖：
+
+- **AI 智课作业**：作业名 + `endTime` 截止时间
+- **共享课作业**：走 `studentexam-api` 的 `getStudentHomework`，需要先做一次 CAS 换票
+- **未提交考试**：接口已接，账号有未交考试时会入库
+- **翻转课 / 兴趣课 / 智慧课程**：课程列表能拿到，作业接口还没验证过
+
+Cookie 会过期，和雨课堂一样，过期后日志会报「智慧树认证失败」。
+
+一个坑记在这里：CAS 换票必须用 **POST** 打那个带 ticket 的地址（接口是 POST-only，
+GET 会 401 导致会话种不下来），而且 Cookie 要写进 requests 的 cookie jar——
+设成固定请求头会盖掉 CAS 新发给 `studentexam-api` 的 `JSESSIONID`。
+
+1. 微信降到 **3.9.x**（你计划用 3.9.12）并保持登录；
+2. `config.yaml` 里 `sources.wechat.enabled: true`，`groups` 填群名（和会话列表完全一致）；
+3. `python run.py --collect --once` 验证。
+
+只读界面、不碰协议。代码优先用 `GetNextNewMessage()`（只抓有新消息的会话，会顺手把红点消掉），没有这个接口时退回逐群 `GetAllMessage()` + 去重。`groups` 留空时只处理新消息接口返回的会话。
 
 ### 微信群（wxauto）
 

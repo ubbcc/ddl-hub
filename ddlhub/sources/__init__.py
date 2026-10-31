@@ -7,12 +7,13 @@ config.yaml 里的 sources.<name>.enabled 调度。采集器只负责往 message
 
 from __future__ import annotations
 
-from . import qq, wechat, yuketang
+from . import qq, wechat, yuketang, zhihuishu
 
 COLLECTORS = {
     "yuketang": yuketang.collect,
     "qq": qq.collect,
     "wechat": wechat.collect,
+    "zhihuishu": zhihuishu.collect,
 }
 
 
