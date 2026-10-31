@@ -10,6 +10,8 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from . import kinds
+
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DB_PATH = DATA_DIR / "ddl.db"
 TZ = timezone(timedelta(hours=8))
@@ -23,6 +25,7 @@ CREATE TABLE IF NOT EXISTS messages (
   sent_at     TEXT,
   content     TEXT NOT NULL,
   msg_uid     TEXT UNIQUE,
+  kind_hint   TEXT,
   ingested_at TEXT NOT NULL,
   extracted   INTEGER NOT NULL DEFAULT 0
 );
@@ -68,7 +71,23 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(p)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+# 老库缺的列在这里补：SCHEMA 里的 CREATE TABLE IF NOT EXISTS 不会给已存在的表加列
+_ADDED_COLUMNS = {
+    "messages": {"kind_hint": "TEXT"},
+}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, cols in _ADDED_COLUMNS.items():
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, decl in cols.items():
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+    conn.commit()
 
 
 def _norm(text: str) -> str:
@@ -101,7 +120,7 @@ _CN_NUM = {
 }
 _CHAPTER_RE = re.compile(r"第([一二三四五六七八九十]+)章")
 _NUM_PREFIX_RE = re.compile(r"^(\d+)\s*[.\-、xX]")
-_CATEGORY_RE = re.compile(r"(作业|实验|论文|考试|测验|展示|报告|习题)")
+_CATEGORY_RE = re.compile(r"(作业|实验|论文|考试|小测|测验|展示|报告|习题|阅读|编程|项目)")
 
 
 def _set_key(title: str) -> str:
@@ -170,8 +189,8 @@ def add_messages(conn: sqlite3.Connection, items: list[dict]) -> int:
             f"{it.get('source')}|{it.get('chat')}|{it.get('sent_at')}|{content}".encode()
         ).hexdigest()
         cur = conn.execute(
-            "INSERT OR IGNORE INTO messages (source, chat, sender, sent_at, content, msg_uid, ingested_at)"
-            " VALUES (?,?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO messages (source, chat, sender, sent_at, content, msg_uid, kind_hint, ingested_at)"
+            " VALUES (?,?,?,?,?,?,?,?)",
             (
                 it.get("source", "manual"),
                 it.get("chat", "手动录入"),
@@ -179,6 +198,7 @@ def add_messages(conn: sqlite3.Connection, items: list[dict]) -> int:
                 it.get("sent_at"),
                 content,
                 uid,
+                kinds.normalize(it.get("kind_hint")),
                 ts,
             ),
         )
@@ -286,7 +306,7 @@ def upsert_task_detail(conn: sqlite3.Connection, t: dict) -> dict:
                 fp,
                 t["title"],
                 course,
-                t.get("kind"),
+                kinds.prefer(None, t.get("kind")),
                 due,
                 t.get("due_text"),
                 t.get("confidence"),
@@ -317,14 +337,17 @@ def upsert_task_detail(conn: sqlite3.Connection, t: dict) -> dict:
 
     # 这次没抽出截止时间（due=None）时不要把已有的时间抹掉——
     # 那条时间可能是用户手动填的（「时间待确认」的作业补上日期后，又重跑了一次抽取）
+    # 重跑抽取时 kind 也要跟着更新（老数据分错过一次就再也修不好了），
+    # 但已被分好的类型不能被退化成兜底的「其他」。
+    kind = kinds.prefer(row["kind"], t.get("kind"))
     keep_due = due is None and bool(row["due_at"])
     if (row["due_at"] or None) == (due or None) or _same_day(row["due_at"], due) or keep_due:
         # 内容没变，只补全缺失字段；同一天内只差钟点的浮动直接对齐，不算改期
         conn.execute(
             "UPDATE tasks SET due_at = COALESCE(?, due_at), confidence = COALESCE(?, confidence),"
-            " evidence = COALESCE(?, evidence), course = COALESCE(course, ?),"
+            " evidence = COALESCE(?, evidence), course = COALESCE(course, ?), kind = ?,"
             " due_text = COALESCE(due_text, ?), updated_at = ? WHERE id = ?",
-            (due, t.get("confidence"), t.get("evidence"), course, t.get("due_text"), ts, row["id"]),
+            (due, t.get("confidence"), t.get("evidence"), course, kind, t.get("due_text"), ts, row["id"]),
         )
         conn.commit()
         return {**base, "action": "unchanged"}
@@ -333,9 +356,9 @@ def upsert_task_detail(conn: sqlite3.Connection, t: dict) -> dict:
     history.append({"at": ts, "from": row["due_at"], "to": due, "why": t.get("evidence", "")[:120]})
     conn.execute(
         "UPDATE tasks SET due_at = ?, due_text = COALESCE(?, due_text), confidence = COALESCE(?, confidence),"
-        " evidence = COALESCE(?, evidence), history = ?, updated_at = ?, status = CASE WHEN status = 'done'"
+        " evidence = COALESCE(?, evidence), kind = ?, history = ?, updated_at = ?, status = CASE WHEN status = 'done'"
         " THEN 'open' ELSE status END WHERE id = ?",
-        (due, t.get("due_text"), t.get("confidence"), t.get("evidence"), json.dumps(history, ensure_ascii=False), ts, row["id"]),
+        (due, t.get("due_text"), t.get("confidence"), t.get("evidence"), kind, json.dumps(history, ensure_ascii=False), ts, row["id"]),
     )
     conn.commit()
     return {**base, "action": "updated", "previous_due": row["due_at"]}
@@ -458,6 +481,9 @@ def update_task(
             v = "" if v is None else str(v).strip()
             if f == "course":
                 v = normalize_course(v) or ""
+            elif f == "kind":
+                # 「实验」这类旧写法归到正名；认不出来的原样保留，不擅自改成其他
+                v = kinds.normalize(v) or v
             new[f] = (v or None)
         elif f in clear:
             new[f] = None

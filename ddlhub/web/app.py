@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from .. import db, ics, notify, pipeline
+from .. import db, ics, kinds, notify, pipeline
 
 WEB_DIR = Path(__file__).resolve().parent
 app = FastAPI(title="作业 DDL 汇总", docs_url=None, redoc_url=None)
@@ -125,23 +125,47 @@ def api_stats():
 
     now = datetime.now(db.TZ)
     overdue = today = week = undated = 0
+    kind_counts: dict[str, int] = {}
+    course_stats: dict[str, dict] = {}
     for t in tasks:
+        kind = kinds.normalize(t.get("kind")) or kinds.FALLBACK
+        kind_counts[kind] = kind_counts.get(kind, 0) + 1
+
+        cs = None
+        if t.get("course"):
+            cs = course_stats.setdefault(
+                t["course"], {"course": t["course"], "open": 0, "overdue": 0}
+            )
+            cs["open"] += 1
+
         if not t.get("due_at"):
             undated += 1
             continue
         h = (datetime.fromisoformat(t["due_at"]) - now).total_seconds() / 3600
         if h < 0:
             overdue += 1
+            if cs is not None:
+                cs["overdue"] += 1
         elif h <= 24:
             today += 1
         if 0 <= h <= 168:
             week += 1
+
+    # 按枚举顺序列（而不是按数量），前后端的颜色/图标才不会跟着数字跳
+    kinds_out = [{"kind": k, "count": kind_counts[k]} for k in kinds.KIND_CHOICES if kind_counts.get(k)]
+    kinds_out += [{"kind": k, "count": n} for k, n in kind_counts.items() if k not in kinds.KIND_CHOICES]
+    courses_out = sorted(
+        course_stats.values(), key=lambda c: (-c["open"], -c["overdue"], c["course"])
+    )[:8]
+
     return {
         "open": len(tasks),
         "overdue": overdue,
         "today": today,
         "week": week,
         "undated": undated,
+        "kinds": kinds_out,
+        "courses": courses_out,
         "messages": msg["c"] or 0,
         "pending": msg["p"] or 0,
         "last_run": dict(run) if run else None,

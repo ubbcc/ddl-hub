@@ -255,6 +255,8 @@ def _entry(act: dict, course: dict) -> dict | None:
         "sender": "雨课堂",
         "sent_at": created or db.now_iso()[:16],
         "content": text,
+        # type 19/20 是接口明说的，别让模型再猜一遍（TITLE_HINTS 兜底的标签不算数）
+        "kind_hint": TYPE_LABELS.get(str(act.get("type"))),
         # 截止时间进 uid：改期会算作新消息，从而触发改期合并
         "msg_uid": f"ykt:{course['cid']}:{act.get('id')}:{due}",
     }

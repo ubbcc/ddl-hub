@@ -16,6 +16,7 @@ import re
 from datetime import datetime
 
 from .providers import Provider, ProviderError, build as _build_provider
+from .. import kinds
 from ..db import TZ  # noqa: F401  (为了向后兼容，老代码 from .llm import TZ 也能用)
 
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -40,7 +41,11 @@ SYSTEM_PROMPT = """你是作业截止时间抽取器。今天是 {today}（{week
 5. 确实无法确定日期的，due_at 填 null，due_text 保留原话，confidence 不高于 0.4。
 6. title 必须能区分同类作业，保留"第几次/第几章/实验几/小组"等编号，不超过 30 字。
    title 里不要写截止时间，也不要写"延期""改为"等状态词——改期信息只体现在 due_at 上。
-7. course 填课程名；判不出就 null。kind 只能是 作业/考试/实验/论文/展示/其他。
+7. course 填课程名；判不出就 null。kind 只能取下面之一，看交付物本身是什么：
+   作业（常规习题、翻译、写作）、小测（随堂测、章节测验、quiz）、考试（期中期末、结课考）、
+   实验报告（实验课报告、上机实验）、论文（课程论文、essay）、展示（答辩、pre、汇报演示）、
+   阅读（读书或文献阅读任务）、编程（要交代码/程序）、小组项目（小组或团队协作的大作业）、
+   其他（都不像）。拿不准选「作业」，不要新造词。
 8. 消息可能是脏数据：带表情、CQ 码、HTML 残留、乱码、错别字、语音转文字错误、半句话。
    按语义尽力理解，别因为格式脏就放弃；实在拿不准就把 confidence 调低，仍然输出。
 9. 若消息里截止时间后面带了「（学期末）」「（长期限）」这类短标注，说明这个时间很可能是
@@ -58,6 +63,8 @@ SYSTEM_PROMPT = """你是作业截止时间抽取器。今天是 {today}（{week
     这种清单里每一组都是一条独立作业，必须逐条输出，不许只取最后一条，也不许合并。
     题目没写「第几章」时，用题号前缀（如「1.x 作业」「2.x 作业」）区分 title。
     截止格不是正常日期的（如「国庆之后」）due_at 填 null，due_text 保留原话。
+11. 有些消息在前面标了〔已知类型：X〕，那是采集接口给的确定信息。
+    这条消息抽出的每个事项，kind 一律照填 X，不要自己判断。
 
 只输出 JSON 数组，不要解释，不要 markdown 代码块。每个元素字段：
 {{"idx": 序号, "title": "", "course": null, "kind": "作业", "due_at": null, "due_text": "原话片段", "confidence": 0.0, "evidence": "触发该事项的原文，<=60字"}}
@@ -70,10 +77,16 @@ def _fmt_msg(m: dict, idx: int) -> str:
     content = (m.get("content") or "").replace("\n", " ⏎ ").strip()
     if len(content) > MAX_MSG_CHARS:
         content = content[:MAX_MSG_CHARS] + "…"
-    return (
+    head = (
         f"[{idx}] {m.get('source', '')}|{m.get('chat', '')}|"
-        f"{m.get('sent_at') or ''}|{m.get('sender') or ''}: {content}"
+        f"{m.get('sent_at') or ''}|{m.get('sender') or ''}: "
     )
+    # 采集器知道确定的类型（雨课堂 type=19/20 等）时，直接告诉模型，
+    # 免得它自己猜；代码侧还会再强制一次，不依赖模型听话。
+    hint = m.get("kind_hint")
+    if hint:
+        head += f"〔已知类型：{hint}〕"
+    return head + content
 
 
 def _extract_json_array(text: str) -> list:
@@ -151,7 +164,8 @@ def extract_batch(
             {
                 "title": title[:120],
                 "course": (it.get("course") or None),
-                "kind": it.get("kind") or "其他",
+                # 类型不交给模型单方面决定：采集器的确定值 > 标题关键词 > 模型 > 其他
+                "kind": kinds.resolve_kind(title, it.get("kind"), src.get("kind_hint")),
                 "due_at": _clean_due(it.get("due_at")),
                 "due_text": (it.get("due_text") or "")[:200],
                 "confidence": _clamp(it.get("confidence")),

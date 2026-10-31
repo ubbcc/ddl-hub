@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from . import db
+from . import db, kinds
 
-KIND_EMOJI = {"作业": "📝", "考试": "📕", "实验": "🔬", "论文": "📄", "展示": "🎤"}
+KIND_EMOJI = kinds.EMOJI
 
 
 def _fold(line: str, limit: int = 74) -> str:

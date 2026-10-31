@@ -4,7 +4,7 @@
 
 ```
 数据源 ──→ messages（原始消息库）
-              │  LLM 抽取（复用本机 claude 命令，无需额外 API key）
+              │  LLM 抽取（provider 可换：硅基流动 / claude-cli / OpenRouter…）
               ▼
            tasks（作业任务，支持自动识别"延期"并更新）
               │
@@ -93,7 +93,7 @@ Telegram 的命令名只允许字母数字下划线，所以 BotFather 菜单里
 | `/set <编号> due <时间>` | 改截止时间，例如 `/set 12 due 明天 23:59` |
 | `/set <编号> title <标题>` | 改标题，例 `/set 12 title 第五章作业` |
 | `/set <编号> course <课程>` | 改课程，例 `/set 12 course 电工学` |
-| `/set <编号> kind <类型>` | 改类型，只能是 作业 / 小测 / 考试 / 实验 / 论文 / 展示 / 其他 |
+| `/set <编号> kind <类型>` | 改类型，只能是 作业 / 小测 / 考试 / 实验报告 / 论文 / 展示 / 阅读 / 编程 / 小组项目 / 其他（「实验」会自动归到「实验报告」） |
 | `/clear <编号> due` | 把截止时间改回「待确认」 |
 | `/done_homework <编号>` | 标记某条作业完成 |
 | `/undone_homework <编号>` | 撤回误点的完成，恢复成待办 |
@@ -151,6 +151,27 @@ python -m ddlhub.setup_llm
 小尺寸 VL 模型容易漏掉界面上的截止日期，提示词要求「逐行原样输出…包括数字和日期」后
 才稳定；如果发现漏字，把这行留空退回 `claude` 更靠谱。
 
+## 作业类型
+
+`kind` 不再完全交给模型自由发挥，优先级是固定的：
+
+1. **采集器已知**：雨课堂 `type=19` → 作业、`20` → 小测；智慧树 AI 智课 `taskType=1` → 作业、
+   未提交考试 → 考试。这类消息入库时带 `kind_hint`，抽取阶段强制生效，模型答什么都不采纳。
+2. **标题关键词**：`ddlhub/kinds.py` 的规则表，顺序即优先级（「小组作业」不会被「作业」抢走）。
+3. **模型**：只有落在枚举内才认。
+4. 兜底「其他」。
+
+枚举：作业 / 小测 / 考试 / 实验报告 / 论文 / 展示 / 阅读 / 编程 / 小组项目 / 其他。
+重跑抽取会刷新 kind，但不会把已经分好的类型退化成「其他」；「实验」这类旧写法自动归到「实验报告」。
+
+看板顶部有两条统计：按类型、按课程（后者带逾期数），每日摘要末尾也会带一句「最压人」。
+老数据可以用确定性规则复查一遍：
+
+```bash
+python -m ddlhub.kinds           # 只打印要改哪些
+python -m ddlhub.kinds --apply   # 确认后落库
+```
+
 ## 数据源
 
 | 来源 | 状态 | 接入方式 |
@@ -201,12 +222,6 @@ Cookie 会过期，和雨课堂一样，过期后日志会报「智慧树认证�
 一个坑记在这里：CAS 换票必须用 **POST** 打那个带 ticket 的地址（接口是 POST-only，
 GET 会 401 导致会话种不下来），而且 Cookie 要写进 requests 的 cookie jar——
 设成固定请求头会盖掉 CAS 新发给 `studentexam-api` 的 `JSESSIONID`。
-
-1. 微信降到 **3.9.x**（你计划用 3.9.12）并保持登录；
-2. `config.yaml` 里 `sources.wechat.enabled: true`，`groups` 填群名（和会话列表完全一致）；
-3. `python run.py --collect --once` 验证。
-
-只读界面、不碰协议。代码优先用 `GetNextNewMessage()`（只抓有新消息的会话，会顺手把红点消掉），没有这个接口时退回逐群 `GetAllMessage()` + 去重。`groups` 留空时只处理新消息接口返回的会话。
 
 ### 微信群（wxauto）
 
@@ -263,14 +278,18 @@ run.py                  入口：起服务 / 采集 / 抽取
 config.yaml             配置
 ddlhub/
   db.py                 SQLite 存储、任务指纹与改期合并
-  llm.py                LLM 抽取（claude-cli 或 Anthropic API）
+  kinds.py              作业类型枚举 + 确定性分类规则
+  llm/                  LLM 抽取；providers/ 每家大模型一个模块
   pipeline.py           消息 → 任务的流水线
+  intake.py             Telegram 手动录入 / 改作业 / 催作业
+  setup_llm.py          模型配置向导（python -m ddlhub.setup_llm）
   ics.py                日历生成
   notify.py             Telegram 摘要推送
   attach.py             群文件 → 纯文本（含 LLM 兜底）
   sources/qq.py         QQ 群采集（NapCat / OneBot）
   sources/wechat.py     微信群采集（wxauto）
   sources/yuketang.py   雨课堂作业/小测采集（Cookie）
+  sources/zhihuishu.py  智慧树（知到）作业采集（Cookie）
   web/app.py            FastAPI 接口
   web/index.html        看板前端（单文件，无构建）
 data/ddl.db             数据库
@@ -280,4 +299,5 @@ data/ddl.db             数据库
 
 - **去重与改期**：任务指纹按「课程+标题主体」生成。标题里的括号注释会被忽略，所以「实验报告3」和「实验报告3（延期至11月10日）」会合并成一条，并把旧截止时间记进 `history`。
 - **抽取从严**：只保留有明确时限的事项；完全判不出日期的会留着 `due_at = null`，在看板「时间待确认」分组里，置信度低于 0.6 会打黄点提示人工核对。
+- **类型可追溯**：`kind` 来自采集器 → 标题关键词 → 模型三级回落，规则在 `ddlhub/kinds.py`，同一个标题每次跑都得到同一个类型。
 - **清空演示数据**：删掉 `data/ddl.db` 即可。

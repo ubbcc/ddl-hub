@@ -265,7 +265,10 @@ def _no_commit_exam(sess, zhs) -> list[dict]:
     return [t for t in items if isinstance(t, dict)]
 
 
-def _entry(source_tag: str, course: str, title: str, due: str | None, uid_key: str, extra: str = "") -> dict | None:
+def _entry(
+    source_tag: str, course: str, title: str, due: str | None, uid_key: str,
+    extra: str = "", kind: str | None = None,
+) -> dict | None:
     if not title:
         return None
     if due:
@@ -280,6 +283,8 @@ def _entry(source_tag: str, course: str, title: str, due: str | None, uid_key: s
         "sender": "智慧树",
         "sent_at": db.now_iso()[:16],
         "content": f"【智慧树·{source_tag}】课程《{course}》作业「{title}」{extra}，截止时间 {_human(due)}",
+        # 接口能确定的类型直接带上，省得模型乱猜
+        "kind_hint": kind,
         # 截止时间进 uid：改期算作新消息，触发改期合并
         "msg_uid": f"zhs:{uid_key}:{due}",
     }
@@ -321,6 +326,7 @@ def collect(conn, cfg, sec) -> dict:
                 due,
                 f"ai:{course.get('courseId')}:{t.get('examTestId') or t.get('id')}",
                 f"（{t.get('startTime', '')[:10]} 布置）" if t.get("startTime") else "",
+                kind="作业",
             )
             if row:
                 rows.append(row)
@@ -365,6 +371,7 @@ def collect(conn, cfg, sec) -> dict:
                 e.get("examName") or e.get("name") or "",
                 due,
                 f"exam:{e.get('examId') or e.get('id')}",
+                kind="考试",
             )
             if row:
                 rows.append(row)

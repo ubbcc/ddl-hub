@@ -9,10 +9,14 @@
     --bg:#f6f7f9; --card:#fff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
     --accent:#2563eb; --danger:#dc2626; --warn:#d97706; --ok:#059669;
     --chip:#f3f4f6;
+    --k-hw:#2563eb; --k-quiz:#7c3aed; --k-exam:#dc2626; --k-lab:#0891b2; --k-paper:#c2410c;
+    --k-pre:#db2777; --k-read:#059669; --k-code:#4f46e5; --k-group:#0d9488; --k-other:#6b7280;
   }
   @media (prefers-color-scheme:dark){
     :root{ --bg:#0f1115; --card:#181b21; --fg:#e5e7eb; --muted:#9ca3af; --line:#262a33;
-           --accent:#60a5fa; --danger:#f87171; --warn:#fbbf24; --ok:#34d399; --chip:#22262e; }
+           --accent:#60a5fa; --danger:#f87171; --warn:#fbbf24; --ok:#34d399; --chip:#22262e;
+           --k-hw:#60a5fa; --k-quiz:#a78bfa; --k-exam:#f87171; --k-lab:#22d3ee; --k-paper:#fb923c;
+           --k-pre:#f472b6; --k-read:#34d399; --k-code:#818cf8; --k-group:#2dd4bf; --k-other:#9ca3af; }
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);
@@ -52,6 +56,12 @@
   .tt{font-weight:600;font-size:15px;line-height:1.35;word-break:break-word}
   .meta{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:12px;color:var(--muted)}
   .chip{background:var(--chip);border-radius:6px;padding:1.5px 6px;font-size:11.5px}
+  .kbar{display:flex;gap:6px;margin-top:9px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}
+  .kbar::-webkit-scrollbar{display:none}
+  .kbar:empty{display:none}
+  .kbar .chip{white-space:nowrap;display:inline-flex;align-items:center;gap:4px}
+  .kbar .chip b{font-weight:600;font-variant-numeric:tabular-nums;color:var(--fg)}
+  .kbar .chip .od{font-style:normal;color:var(--danger);font-size:10.5px}
   .due{font-variant-numeric:tabular-nums;font-weight:600}
   .due.overdue{color:var(--danger)} .due.soon{color:var(--warn)}
   .acts{display:flex;gap:6px;margin-top:9px}
@@ -100,6 +110,9 @@
       <button data-cal>订阅日历</button>
     </div>
   </header>
+
+  <div class="kbar" id="kinds"></div>
+  <div class="kbar" id="courses"></div>
 
   <div class="tabs">
     <button class="tab on" data-status="open">待办</button>
@@ -199,7 +212,16 @@ function fmtDue(iso){
   return {text:`${TZ_MD.format(d)} ${hm}（${Math.round(h/24)} 天后）`, cls:'far'};
 }
 
-const SOURCE_LABELS = { manual: '手动粘贴', yuketang: '雨课堂', qq: 'QQ 群', wechat: '微信群' };
+const SOURCE_LABELS = { manual: '手动粘贴', yuketang: '雨课堂', qq: 'QQ 群', wechat: '微信群', zhihuishu: '智慧树', telegram: 'Telegram' };
+
+// [颜色变量后缀, 图标]；颜色定义在 :root 的 --k-*，亮/暗色各一套
+const KIND_META = {
+  '作业':['hw','📝'], '小测':['quiz','⏱'], '考试':['exam','📕'], '实验报告':['lab','🔬'],
+  '论文':['paper','📄'], '展示':['pre','🎤'], '阅读':['read','📖'], '编程':['code','💻'],
+  '小组项目':['group','👥'], '其他':['other','•'],
+};
+const KINDS = Object.keys(KIND_META);
+function kindMeta(k){ return KIND_META[k] || KIND_META['其他']; }
 
 const GROUPS = [
   ['overdue','已逾期', t => hoursLeft(t.due_at) !== null && hoursLeft(t.due_at) < 0],
@@ -233,6 +255,7 @@ function render(tasks){
 
 function card(t){
   const d = fmtDue(t.due_at);
+  const [ks, ki] = kindMeta(t.kind || '其他');
   const cls = t.status !== 'open' ? 'done' : (d.cls || '');
   const low = (t.confidence ?? 1) < 0.6 ? '<span class="lowconf" title="置信度低，建议人工核对"></span>' : '';
   const changed = (t.history && t.history.length) ? `<span class="chip" title="${esc(t.history[t.history.length-1].why||'')}">改期 ${t.history.length} 次</span>` : '';
@@ -241,7 +264,7 @@ function card(t){
     <div class="meta">
       <span class="due ${d.cls}">${d.text}</span>
       ${t.course ? `<span class="chip">${esc(t.course)}</span>` : ''}
-      ${t.kind ? `<span class="chip">${esc(t.kind)}</span>` : ''}
+      ${t.kind ? `<span class="chip" style="color:var(--k-${ks})" title="类型">${ki} ${esc(t.kind)}</span>` : ''}
       ${changed}
       ${t.source ? `<span>${esc(SOURCE_LABELS[t.source] || t.source)}</span>` : ''}
     </div>
@@ -273,6 +296,17 @@ async function api(path, opt){
   return r.json();
 }
 
+function renderBars(stats){
+  $('#kinds').innerHTML = (stats.kinds || []).map(({kind, count}) => {
+    const [slug, icon] = kindMeta(kind);
+    return `<span class="chip" style="color:var(--k-${slug})" title="按类型统计">${icon} ${esc(kind)} <b>${count}</b></span>`;
+  }).join('');
+  $('#courses').innerHTML = (stats.courses || []).map(c =>
+    `<span class="chip" title="按课程统计：待办 / 逾期">${esc(c.course)} <b>${c.open}</b>` +
+    (c.overdue ? ` <i class="od">逾期 ${c.overdue}</i>` : '') + '</span>'
+  ).join('');
+}
+
 async function load(){
   const [data, stats] = await Promise.all([
     api('/api/tasks?status=' + status),
@@ -280,6 +314,7 @@ async function load(){
   ]);
   cache = data.tasks;
   render(cache);
+  renderBars(stats);
   $('#s_overdue').textContent = stats.overdue;
   $('#s_today').textContent = stats.today;
   $('#s_week').textContent = stats.week;
@@ -300,7 +335,6 @@ async function act(action, id){
   load();
 }
 
-const KINDS = ['作业','小测','考试','实验','论文','展示','其他'];
 let editingId = null;
 
 function openEdit(id){

@@ -23,7 +23,7 @@ from pathlib import Path
 
 import requests
 
-from . import attach, db, llm, pipeline
+from . import attach, db, kinds, llm, pipeline
 
 API = "https://api.telegram.org/bot{token}/{method}"
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
@@ -39,7 +39,7 @@ LIST_CMDS = {"list", "ls", "列表"}
 DONE_HW_CMDS = {"done_homework"}
 UNDONE_HW_CMDS = {"undone_homework"}
 
-KIND_CHOICES = ["作业", "小测", "考试", "实验", "论文", "展示", "其他"]
+KIND_CHOICES = kinds.KIND_CHOICES
 _STATUS_LABEL = {"open": "未完成", "done": "已完成", "ignored": "已忽略"}
 FIELD_ALIASES = {
     "due": "due_at", "due_at": "due_at", "time": "due_at", "截止": "due_at", "时间": "due_at",
@@ -524,10 +524,11 @@ def _cmd_set(token: str, chat_id: str, rest: str, cfg: dict) -> None:
             return
         fields["due_at"] = iso
     elif field == "kind":
-        if value not in KIND_CHOICES:
-            _send(token, chat_id, f"类型只能是：{' / '.join(KIND_CHOICES)}")
+        k = kinds.normalize(value)
+        if k is None:
+            _send(token, chat_id, f"类型只能是：{' / '.join(KIND_CHOICES)}\n（「实验」会自动归到「实验报告」）")
             return
-        fields["kind"] = value
+        fields["kind"] = k
     else:
         fields[field] = value
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import requests
 
-from . import db
+from . import db, kinds
 
 DEFAULT_CHAT_ID = "8058536155"
 TOKEN_ENV_FILE = Path.home() / ".claude" / "channels" / "telegram" / ".env"
@@ -113,7 +113,8 @@ def digest(conn=None, cfg: dict | None = None, hours: int = 72) -> str:
         lines.append("")
         lines.append(f"{label[key]}（{len(items)}）")
         for due, t in items[:12]:
-            head = f"• {t['title']}"
+            emoji = kinds.EMOJI.get(kinds.normalize(t.get("kind")) or "", "")
+            head = f"• {emoji + ' ' if emoji else ''}{t['title']}"
             if t.get("course"):
                 head += f" · {t['course']}"
             tail = f"  〔{_fmt_due(due)}〕" if t.get("due_at") else f"  〔{t.get('due_text') or '无日期'}〕"
@@ -125,4 +126,16 @@ def digest(conn=None, cfg: dict | None = None, hours: int = 72) -> str:
     if total == 0:
         lines.append("")
         lines.append("暂时没有待办作业 🎉")
+        return "\n".join(lines)
+
+    # 哪门课最压人：按未完成条数排，只列前三
+    by_course: dict[str, int] = {}
+    for t in tasks:
+        name = t.get("course")
+        if name:
+            by_course[name] = by_course.get(name, 0) + 1
+    if len(by_course) >= 2:
+        top = sorted(by_course.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+        lines.append("")
+        lines.append("📚 最压人：" + " · ".join(f"{n} {c}" for n, c in top))
     return "\n".join(lines)
