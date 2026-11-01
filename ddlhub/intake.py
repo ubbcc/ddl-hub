@@ -61,11 +61,19 @@ HELP_TEXT = (
 
 # ---------------------------------------------------------------- Telegram
 
+_TOKEN_RE = re.compile(r"bot(\d+):[\w-]+")
+
+
+def _redact(text: object) -> str:
+    """requests 的异常消息会把整条 URL（含 bot token）带出来，别让它进日志。"""
+    return _TOKEN_RE.sub(r"bot\1:***", str(text))
+
+
 def _api(token: str, method: str, payload: dict | None = None, timeout: int = 30) -> dict:
     try:
         r = requests.post(API.format(token=token, method=method), json=payload or {}, timeout=timeout)
     except requests.RequestException as e:
-        raise RuntimeError(f"{method} 请求失败：{e}") from None
+        raise RuntimeError(f"{method} 请求失败：{_redact(e)}") from None
     try:
         data = r.json()
     except ValueError:
@@ -109,7 +117,7 @@ def _download(token: str, file_id: str, name: str) -> Path | None:
         r = requests.get(f"https://api.telegram.org/file/bot{token}/{rel}", timeout=120)
         r.raise_for_status()
     except (requests.RequestException, RuntimeError) as e:
-        print(f"[intake] 下载 {name} 失败：{e}")
+        print(f"[intake] 下载 {name} 失败：{_redact(e)}")
         return None
     if len(r.content) > attach.MAX_BYTES:
         print(f"[intake] {name} 超过 {attach.MAX_BYTES // 1024 // 1024} MB，跳过")
@@ -760,6 +768,10 @@ def run_forever(cfg: dict) -> None:
 
     print(f"[intake] 开始长轮询（offset={offset}）", flush=True)
 
+    # api.telegram.org 在国内经常被中途重置（SSLError / 连接被掐），属于常态抖动：
+    # 退避重试，别每 5 秒刷一次同样的堆栈。
+    fail_count = 0
+    delay = 5
     while True:
         try:
             data = _api(token, "getUpdates", {
@@ -768,9 +780,19 @@ def run_forever(cfg: dict) -> None:
                 "allowed_updates": ["message", "edited_message"],
             }, timeout=45)
         except Exception as e:
-            print(f"[intake] 拉取更新失败：{e}", flush=True)
-            time.sleep(5)
+            fail_count += 1
+            if fail_count == 1 or fail_count % 10 == 0:
+                print(
+                    f"[intake] 拉取更新失败（连续 {fail_count} 次，{delay}s 后重试）：{_redact(e)}",
+                    flush=True,
+                )
+            time.sleep(delay)
+            delay = min(delay * 2, 120)
             continue
+
+        if fail_count:
+            print(f"[intake] 轮询已恢复（之前连续失败 {fail_count} 次）", flush=True)
+            fail_count, delay = 0, 5
 
         for up in data.get("result") or []:
             offset = int(up.get("update_id", offset)) + 1

@@ -62,6 +62,12 @@ intake:
 （比如 Claude Code 的 Telegram 插件），两边就会抢同一条更新——那种情况下才需要
 在 `intake.token` 里填另一个 bot。
 
+国内直连 `api.telegram.org` 经常会被中途重置，日志里表现为
+`SSLError: UNEXPECTED_EOF_WHILE_READING`。长轮询遇到这种抖动会自动退避重试
+（5s 起翻倍、封顶 120s），失败日志只打第 1 次和之后每 10 次，恢复时再打一条，不会刷屏；
+消息不会丢，offset 没推进，网络恢复后会重新拉回来。有本地代理的话启动前设
+`HTTPS_PROXY=http://127.0.0.1:7890`（`requests` 会自动走），可以少掉很多重试。
+
 然后在 Telegram 里：
 
 1. `/add_homework` 开一轮录入
