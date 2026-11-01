@@ -17,7 +17,7 @@ from pathlib import Path
 
 import requests
 
-from .. import db
+from .. import db, net
 
 DEBUG_PATH = Path(__file__).resolve().parents[2] / "data" / "yt_debug.json"
 
@@ -270,7 +270,7 @@ def collect(conn, cfg, sec) -> dict:
         raise RuntimeError("还没填雨课堂 Cookie：config.yaml → sources.yuketang.cookie")
 
     base = f"https://{host}"
-    sess = requests.Session()
+    sess = net.Session(net.settings(cfg, "sources"), label="yuketang")
     sess.headers.update(
         {
             "Cookie": cookie,

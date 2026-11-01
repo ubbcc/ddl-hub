@@ -18,8 +18,11 @@ import html
 import re
 import shutil
 import subprocess
+import time
 import zipfile
 from pathlib import Path
+
+from . import net
 
 MAX_CHARS = 8000
 MAX_BYTES = 8 * 1024 * 1024
@@ -131,7 +134,7 @@ def _xlsx_text(path: Path) -> str:
         wb.close()
 
 
-def _claude_read(path: Path, timeout: int = 180) -> str:
+def _claude_read(path: Path, timeout: int = 180, retry: dict | None = None) -> str:
     if not shutil.which("claude"):
         raise UnsupportedFile("本机没有 claude 命令，无法远端解析")
     prompt = (
@@ -139,21 +142,43 @@ def _claude_read(path: Path, timeout: int = 180) -> str:
         "把其中的文字内容原样输出成纯文本。不要总结、不要解释、不要加任何前后缀。"
         "如果文件里没有可读文字，只输出一行：EMPTY"
     )
-    proc = subprocess.run(
-        ["claude", "-p", "--output-format", "text"],
-        input=prompt,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-    )
-    if proc.returncode != 0:
-        raise UnsupportedFile(f"远端解析失败：{(proc.stderr or '')[:200]}")
-    text = proc.stdout.strip()
-    if text == "EMPTY":
-        raise UnsupportedFile("远端解析没有取到文字")
-    return text
+    r = net.normalize(retry)
+    attempts = r["max_attempts"] if r["enabled"] else 1
+    last = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            proc = subprocess.run(
+                ["claude", "-p", "--output-format", "text"],
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            # 时间预算已经花完，重试只会翻倍等待
+            raise UnsupportedFile(f"远端解析超时（{timeout}s）") from None
+        except OSError as e:
+            raise UnsupportedFile(f"启动 claude 失败：{e}") from None
+
+        if proc.returncode == 0:
+            text = proc.stdout.strip()
+            if text == "EMPTY":
+                raise UnsupportedFile("远端解析没有取到文字")
+            return text
+
+        last = (proc.stderr or "")[:200] or f"退出码 {proc.returncode}"
+        if attempt >= attempts:
+            break
+        wait = net.delay_for(attempt, r)
+        print(
+            f"[attach] claude 解析失败（第 {attempt}/{attempts} 次）：{net.redact(last)}，"
+            f"{wait:.1f}s 后重试",
+            flush=True,
+        )
+        time.sleep(wait)
+    raise UnsupportedFile(f"远端解析失败：{last}")
 
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
@@ -164,23 +189,23 @@ IMAGE_PROMPT = (
 )
 
 
-def _vision_provider():
+def _vision_provider(cfg: dict | None = None):
     """图片解析用的模型。没配 vision_model 且主模型看着不是多模态，就返回 None。"""
     from . import llm, pipeline  # 延迟导入：attach 被 sources 引用，避免导入环
 
-    cfg = pipeline.load_config()
+    cfg = cfg if cfg is not None else pipeline.load_config()
     llm_cfg = dict(cfg.get("llm") or {})
     vision = str(llm_cfg.get("vision_model") or "").strip()
     if vision:
         llm_cfg["model"] = vision
     elif "vl" not in str(llm_cfg.get("model") or "").lower():
         return None
-    return llm.build_provider(llm_cfg)
+    return llm.build_provider(llm_cfg, retry=net.settings(cfg, "attach"))
 
 
-def _llm_read(path: Path, timeout: int = 180) -> str:
+def _llm_read(path: Path, timeout: int = 180, cfg: dict | None = None) -> str:
     """用 llm 模块里配置的多模态模型读图片。"""
-    provider = _vision_provider()
+    provider = _vision_provider(cfg)
     if provider is None:
         raise UnsupportedFile("没配 vision_model，也没有多模态主模型")
     if not hasattr(provider, "complete_image"):
@@ -196,14 +221,18 @@ def _remote_read(path: Path, timeout: int = 180) -> tuple[str, str]:
 
     返回 (engine, text)；engine 会写进消息头，方便事后判断是哪条路解析出来的。
     """
+    from . import pipeline  # 延迟导入，避免导入环
+
+    cfg = pipeline.load_config()
+    retry = net.settings(cfg, "attach")
     errors = []
     if path.suffix.lower() in IMAGE_EXT:
         try:
-            return "llm-remote", _llm_read(path)
+            return "llm-remote", _llm_read(path, cfg=cfg)
         except Exception as e:
             errors.append(f"llm: {e}")
     try:
-        return "claude-remote", _claude_read(path, timeout)
+        return "claude-remote", _claude_read(path, timeout, retry=retry)
     except Exception as e:
         errors.append(f"claude: {e}")
     raise UnsupportedFile("远端解析都失败了（" + "；".join(errors)[:250] + "）")

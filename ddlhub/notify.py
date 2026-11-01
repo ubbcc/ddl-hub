@@ -8,7 +8,7 @@ from pathlib import Path
 
 import requests
 
-from . import db, kinds
+from . import db, kinds, net
 
 DEFAULT_CHAT_ID = "8058536155"
 TOKEN_ENV_FILE = Path.home() / ".claude" / "channels" / "telegram" / ".env"
@@ -33,20 +33,41 @@ def _chat_id(cfg: dict | None = None) -> str:
     return str(tg.get("chat_id") or os.environ.get("DDLHUB_TG_CHAT") or DEFAULT_CHAT_ID)
 
 
+def _tg_retry_after(resp: requests.Response) -> float | None:
+    """Telegram 的限流等待放在 JSON body 的 parameters 里，不在响应头。"""
+    if resp.status_code != 429:
+        return None
+    try:
+        params = (resp.json() or {}).get("parameters") or {}
+        return float(params.get("retry_after"))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 def send(text: str, cfg: dict | None = None, chat_id: str | None = None) -> bool:
     token = _token(cfg)
     if not token:
         raise RuntimeError("没有 Telegram token：设置 config.yaml 的 notify.telegram.token 或环境变量 DDLHUB_TG_TOKEN")
-    resp = requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        json={
-            "chat_id": chat_id or _chat_id(cfg),
-            "text": text[:4000],
-            "disable_web_page_preview": True,
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
+    try:
+        resp = net.request(
+            "POST",
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id": chat_id or _chat_id(cfg),
+                "text": text[:4000],
+                "disable_web_page_preview": True,
+            },
+            timeout=30,
+            retry=net.settings(cfg, "notify"),
+            idempotent=False,
+            # 推送宁可偶尔重复一条，也别因为一次抖动丢掉当天的摘要
+            retry_timeouts=True,
+            label="telegram:sendMessage",
+            retry_after_of=_tg_retry_after,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        raise RuntimeError(f"Telegram 推送失败：{net.redact(e)}") from None
     return bool(resp.json().get("ok"))
 
 

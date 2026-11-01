@@ -15,22 +15,32 @@ from urllib.parse import unquote
 
 import requests
 
-from .. import attach, db
+from .. import attach, db, net
 
 FILE_DIR = Path(__file__).resolve().parents[2] / "data" / "files"
 MAX_FILES = 5
 
 
-def _api(base: str, token: str, action: str, payload: dict | None = None, timeout: int = 30):
+def _api(base: str, token: str, action: str, payload: dict | None = None, timeout: int = 30, retry: dict | None = None):
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     url = f"{base.rstrip('/')}/{action}"
     try:
-        r = requests.post(url, json=payload or {}, headers=headers, timeout=timeout)
-    except requests.ConnectionError:
+        r = net.request(
+            "POST",
+            url,
+            json=payload or {},
+            headers=headers,
+            timeout=timeout,
+            retry=retry,
+            idempotent=True,
+            label=f"qq:{action}",
+        )
+    except requests.RequestException as e:
         raise RuntimeError(
-            f"连不上 NapCat（{base}）。确认 NapCat 已启动，且 onebot11 配置里的 HTTP 服务端口一致"
+            f"连不上 NapCat（{base}）。确认 NapCat 已启动，且 onebot11 配置里的 HTTP 服务端口一致："
+            f"{net.redact(e)}"
         ) from None
     if r.status_code in (401, 403):
         raise RuntimeError(f"NapCat 拒绝访问（{action}），检查 config 里的 token")
@@ -123,11 +133,11 @@ def _file_segments(msg: dict) -> list[dict]:
     return out
 
 
-def _download(url: str, name: str) -> Path | None:
+def _download(url: str, name: str, retry: dict | None = None) -> Path | None:
     if not url:
         return None
     try:
-        r = requests.get(url, timeout=60)
+        r = net.request("GET", url, timeout=60, retry=retry, idempotent=True, label="qq:file")
         r.raise_for_status()
     except requests.RequestException as e:
         print(f"[qq] 下载失败 {name}：{e}")
@@ -138,7 +148,7 @@ def _download(url: str, name: str) -> Path | None:
     return attach.save_bytes(r.content, name, FILE_DIR)
 
 
-def _resolve_url(base: str, token: str, gid, seg: dict) -> str:
+def _resolve_url(base: str, token: str, gid, seg: dict, retry: dict | None = None) -> str:
     if seg.get("url"):
         return seg["url"]
     if not seg.get("file_id"):
@@ -147,7 +157,7 @@ def _resolve_url(base: str, token: str, gid, seg: dict) -> str:
     if seg.get("busid") is not None:
         payload["busid"] = seg["busid"]
     try:
-        data = _api(base, token, "get_group_file_url", payload)
+        data = _api(base, token, "get_group_file_url", payload, retry=retry)
     except Exception as e:
         print(f"[qq] 取文件直链失败 {seg['name']}：{e}")
         return ""
@@ -183,8 +193,9 @@ def collect(conn, cfg, sec) -> dict:
     token = sec.get("token") or ""
     wanted = {str(g) for g in (sec.get("groups") or [])}
     count = int(sec.get("history_count") or 100)
+    retry = net.settings(cfg, "sources")
 
-    groups = _api(base, token, "get_group_list") or []
+    groups = _api(base, token, "get_group_list", retry=retry) or []
     if not isinstance(groups, list):
         raise RuntimeError("get_group_list 返回格式不对，NapCat 版本可能不兼容")
     if not wanted:
@@ -207,6 +218,7 @@ def collect(conn, cfg, sec) -> dict:
                 token,
                 "get_group_msg_history",
                 {"group_id": gid, "count": count, "reverseOrder": False},
+                retry=retry,
             ) or {}
         except Exception as e:
             print(f"[qq] 跳过群 {name}：{e}")
@@ -245,8 +257,8 @@ def collect(conn, cfg, sec) -> dict:
                 if db.has_file_message(conn, "qq", name, seg["name"]):
                     db.drop_placeholder(conn, "qq", name, seg["name"])
                     continue
-                url = _resolve_url(base, token, gid, seg)
-                local = _download(url, seg["name"]) if url else None
+                url = _resolve_url(base, token, gid, seg, retry)
+                local = _download(url, seg["name"], retry) if url else None
                 row = attach.to_message(local, "qq", name, sender, sent_at, filename=seg["name"]) if local else None
                 if row:
                     db.drop_placeholder(conn, "qq", name, seg["name"])

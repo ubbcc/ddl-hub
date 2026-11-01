@@ -114,9 +114,9 @@ def _extract_json_array(text: str) -> list:
     return []
 
 
-def build_provider(cfg: dict | None = None) -> Provider:
+def build_provider(cfg: dict | None = None, *, retry: dict | None = None) -> Provider:
     """按 config 的 llm 段造 provider。配置坏就直接抛 ProviderError。"""
-    return _build_provider(cfg)
+    return _build_provider(cfg, retry=retry)
 
 
 def extract_batch(

@@ -29,6 +29,7 @@ class OpenRouterProvider(OpenAICompatProvider):
         reasoning: bool = False,
         referer: str = DEFAULT_REFERER,
         title: str = DEFAULT_TITLE,
+        retry: dict | None = None,
     ):
         if not api_key:
             raise ProviderError(
@@ -44,4 +45,5 @@ class OpenRouterProvider(OpenAICompatProvider):
             max_tokens=max_tokens,
             extra_headers={"HTTP-Referer": referer, "X-Title": title},
             extra_body=extra_body,
+            retry=retry,
         )

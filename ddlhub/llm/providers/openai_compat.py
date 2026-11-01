@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import requests
 
+from ... import net
 from .base import Provider, ProviderError
 
 
@@ -39,6 +40,7 @@ class OpenAICompatProvider(Provider):
         max_tokens: int = 4096,
         extra_headers: dict | None = None,
         extra_body: dict | None = None,
+        retry: dict | None = None,
     ):
         if not model:
             raise ProviderError("没有指定模型（config.yaml 里的 llm.model）")
@@ -51,6 +53,7 @@ class OpenAICompatProvider(Provider):
         self.max_tokens = max_tokens
         self.extra_headers = dict(extra_headers or {})
         self.extra_body = dict(extra_body or {})
+        self.retry = net.normalize(retry)
 
     def _headers(self) -> dict:
         h = {"Content-Type": "application/json"}
@@ -72,11 +75,23 @@ class OpenAICompatProvider(Provider):
     def _post(self, payload: dict, timeout: int) -> str:
         url = f"{self.base_url}/chat/completions"
         try:
-            resp = requests.post(url, headers=self._headers(), json=payload, timeout=timeout)
+            resp = net.request(
+                "POST",
+                url,
+                headers=self._headers(),
+                json=payload,
+                timeout=timeout,
+                retry=self.retry,
+                idempotent=False,
+                label=f"llm:{self.name}",
+            )
         except requests.RequestException as e:
-            raise ProviderError(f"连不上 {self.describe()}：{e}") from None
+            raise ProviderError(f"连不上 {self.describe()}：{net.redact(e)}", transient=True) from None
         if resp.status_code >= 400:
-            raise ProviderError(f"{self.describe()} 返回 {resp.status_code}: {resp.text[:300]}")
+            raise ProviderError(
+                f"{self.describe()} 返回 {resp.status_code}: {resp.text[:300]}",
+                transient=resp.status_code in self.retry["retry_statuses"],
+            )
         try:
             data = resp.json()
             return _content_of(data["choices"][0]["message"])

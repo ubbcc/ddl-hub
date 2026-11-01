@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from . import db, llm
+from . import db, llm, net
 
 
 def load_config(path: Path | str | None = None) -> dict:
@@ -17,10 +17,14 @@ def load_config(path: Path | str | None = None) -> dict:
         return yaml.safe_load(f) or {}
 
 
+class _TransientAbort(Exception):
+    """网络故障：本轮扫描别继续了，剩下的消息留待下次运行。"""
+
+
 def _provider(cfg: dict, stats: dict):
     """配置有问题时把原因写进 stats["errors"]，返回 None 让调用方收工。"""
     try:
-        return llm.build_provider(cfg.get("llm") or {})
+        return llm.build_provider(cfg.get("llm") or {}, retry=net.settings(cfg, "llm"))
     except llm.ProviderError as e:
         stats["errors"].append(f"模型配置有问题：{e}")
         return None
@@ -52,7 +56,11 @@ def run_extraction(conn=None, config: dict | None = None, limit: int = 500) -> d
 
         for start in range(0, len(msgs), batch_size):
             chunk = msgs[start : start + batch_size]
-            _process_chunk(conn, chunk, provider, timeout, stats)
+            try:
+                _process_chunk(conn, chunk, provider, timeout, stats)
+            except _TransientAbort as e:
+                stats["errors"].append(f"网络故障，本次扫描提前结束，剩下的消息留待下次：{str(e)[:200]}")
+                break
 
         db.log_run(conn, started, not stats["errors"], str(stats))
         return stats
@@ -63,12 +71,17 @@ def run_extraction(conn=None, config: dict | None = None, limit: int = 500) -> d
 
 def _process_chunk(conn, chunk: list[dict], provider, timeout: int, stats: dict) -> None:
     """整批失败就二分重试——模型偶尔会返回坏 JSON，把坏样本隔离出来，
-    避免一批 60 条里有一条脏数据就全批丢弃。"""
+    避免一批 60 条里有一条脏数据就全批丢弃。
+
+    网络/限流类故障不二分：重试已经在 net.py 里做过了，再拆批只会把一次失败
+    放大成 N 次调用，整批留给下次运行即可。"""
     if not chunk:
         return
     try:
         tasks = llm.extract_batch(chunk, provider=provider, timeout=timeout)
     except Exception as e:
+        if getattr(e, "transient", False):
+            raise _TransientAbort(str(e)) from None
         if len(chunk) > 1:
             mid = len(chunk) // 2
             _process_chunk(conn, chunk[:mid], provider, timeout, stats)
@@ -105,7 +118,11 @@ def extract_rows(conn, rows: list[dict], config: dict | None = None) -> dict:
     started = db.now_iso()
     for start in range(0, len(rows), batch_size):
         chunk = rows[start : start + batch_size]
-        _process_chunk_detail(conn, chunk, provider, timeout, result)
+        try:
+            _process_chunk_detail(conn, chunk, provider, timeout, result)
+        except _TransientAbort as e:
+            result["errors"].append(f"网络故障，本次解析提前结束，剩下的留待下次：{str(e)[:200]}")
+            break
 
     db.log_run(conn, started, not result["errors"], f"manual: {result['tasks']}")
     return result
@@ -118,6 +135,8 @@ def _process_chunk_detail(conn, chunk: list[dict], provider, timeout: int, resul
     try:
         tasks = llm.extract_batch(chunk, provider=provider, timeout=timeout)
     except Exception as e:
+        if getattr(e, "transient", False):
+            raise _TransientAbort(str(e)) from None
         if len(chunk) > 1:
             mid = len(chunk) // 2
             _process_chunk_detail(conn, chunk[:mid], provider, timeout, result)

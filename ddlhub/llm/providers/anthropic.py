@@ -6,6 +6,7 @@ import os
 
 import requests
 
+from ... import net
 from .base import Provider, ProviderError
 
 DEFAULT_BASE = "https://api.anthropic.com"
@@ -22,6 +23,7 @@ class AnthropicProvider(Provider):
         base_url: str = "",
         max_tokens: int = 4096,
         temperature: float = 0.0,
+        retry: dict | None = None,
     ):
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         if not self.api_key:
@@ -30,10 +32,12 @@ class AnthropicProvider(Provider):
         self.model = model or DEFAULT_MODEL
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.retry = net.normalize(retry)
 
     def complete(self, prompt: str, timeout: int = 240) -> str:
         try:
-            resp = requests.post(
+            resp = net.request(
+                "POST",
                 f"{self.base_url}/v1/messages",
                 headers={
                     "x-api-key": self.api_key,
@@ -47,10 +51,16 @@ class AnthropicProvider(Provider):
                     "messages": [{"role": "user", "content": prompt}],
                 },
                 timeout=timeout,
+                retry=self.retry,
+                idempotent=False,
+                label="llm:anthropic",
             )
         except requests.RequestException as e:
-            raise ProviderError(f"连不上 Anthropic：{e}") from None
+            raise ProviderError(f"连不上 Anthropic：{net.redact(e)}", transient=True) from None
         if resp.status_code >= 400:
-            raise ProviderError(f"Anthropic 返回 {resp.status_code}: {resp.text[:300]}")
+            raise ProviderError(
+                f"Anthropic 返回 {resp.status_code}: {resp.text[:300]}",
+                transient=resp.status_code in self.retry["retry_statuses"],
+            )
         data = resp.json()
         return "".join(b.get("text", "") for b in data.get("content", []))

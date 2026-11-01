@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 import requests
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from .. import db
+from .. import db, net
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -73,13 +73,13 @@ class ZHSEncrypt:
         return base64.b64encode(e.update(data) + e.finalize()).decode()
 
 
-def _session(cookie: str) -> requests.Session:
+def _session(cookie: str, retry: dict | None = None) -> requests.Session:
     """Cookie 写进 cookie jar，不要设成请求头。
 
     studentexam-api 那条链路会通过 CAS 种新的 JSESSIONID；如果用一个固定的
     Cookie 请求头，requests 发送时会把它盖掉，会话就永远建不起来（一直 302）。
     """
-    s = requests.Session()
+    s = net.Session(retry, label="zhihuishu")
     for part in cookie.split(";"):
         if "=" not in part:
             continue
@@ -301,7 +301,7 @@ def collect(conn, cfg, sec) -> dict:
         if override:
             keys[name] = override
     zhs = ZHSEncrypt((sec.get("iv") or DEFAULT_IV).strip(), keys)
-    sess = _session(cookie)
+    sess = _session(cookie, net.settings(cfg, "sources"))
 
     rows: list[dict] = []
     courses = 0

@@ -157,6 +157,31 @@ python -m ddlhub.setup_llm
 小尺寸 VL 模型容易漏掉界面上的截止日期，提示词要求「逐行原样输出…包括数字和日期」后
 才稳定；如果发现漏字，把这行留空退回 `claude` 更靠谱。
 
+## 网络重试
+
+所有 `requests` 调用（LLM 抽取、雨课堂/智慧树/QQ 采集、Telegram 推送、附件远端解析）
+都走 `ddlhub/net.py` 的同一个重试入口：连接被掐、超时、408/429/5xx 按指数退避重试，
+默认 3 次（1s 起、×2、单次封顶 20s，带 ±30% 抖动）。429/503 带 `Retry-After` 时按服务端
+要求等待，超过 60 秒就直接放弃。
+
+`config.yaml` 里可以整体覆盖，也可以按子系统（`llm` / `notify` / `sources` / `attach` / `intake`）微调：
+
+```yaml
+retry:
+  max_attempts: 3
+  initial_delay: 1.0
+  max_delay: 20
+  jitter: 0.3
+  # notify:
+  #   max_attempts: 4
+```
+
+两处例外是有意为之：
+
+- **LLM 抽取**不重试读超时（只重试连接失败和 429/5xx），避免服务端已计费时重复提交；
+  重试耗尽的网络错误也不会再触发「二分拆批」，整批留到下次运行，不会把 60 条拆成 60 次调用。
+- **Telegram 发消息**连读超时也重试，宁可偶尔重复一条，也别丢一天提醒。
+
 ## 作业类型
 
 `kind` 不再完全交给模型自由发挥，优先级是固定的：
@@ -285,6 +310,7 @@ config.yaml             配置
 ddlhub/
   db.py                 SQLite 存储、任务指纹与改期合并
   kinds.py              作业类型枚举 + 确定性分类规则
+  net.py                统一的 HTTP 重试与密钥脱敏
   llm/                  LLM 抽取；providers/ 每家大模型一个模块
   pipeline.py           消息 → 任务的流水线
   intake.py             Telegram 手动录入 / 改作业 / 催作业

@@ -60,21 +60,31 @@ def _scheduler(cfg: dict) -> None:
     except ValueError:
         hh, mm = 8, 0
     done_for = ""
+    fail_day, fail_count = "", 0
     while True:
         now = datetime.now(db.TZ)
         today = now.strftime("%Y-%m-%d")
         # 过点就算：8 点没开机、9 点才启动当天也会补发一次，不至于漏掉
         past_due = now.hour > hh or (now.hour == hh and now.minute >= mm)
         if past_due and done_for != today:
-            done_for = today
-            try:
-                collect_sources(cfg)
-                stats = pipeline.run_extraction(config=cfg)
-                text = notify.digest(cfg=cfg, hours=int(cfg.get("notify", {}).get("digest_hours", 72)))
-                notify.send(text, cfg)
-                print(f"[scheduler] {today} 完成：{stats}", flush=True)
-            except Exception as e:
-                print(f"[scheduler] 失败：{e}", file=sys.stderr, flush=True)
+            if fail_day != today:
+                fail_day, fail_count = today, 0
+            if fail_count >= 3:
+                # 连续失败 3 次（每次间隔 30s）今天就不再试了，明天照常补
+                print(f"[scheduler] {today} 连续失败 {fail_count} 次，今天不再重试", file=sys.stderr, flush=True)
+                done_for = today
+            else:
+                try:
+                    collect_sources(cfg)
+                    stats = pipeline.run_extraction(config=cfg)
+                    text = notify.digest(cfg=cfg, hours=int(cfg.get("notify", {}).get("digest_hours", 72)))
+                    notify.send(text, cfg)
+                    done_for = today
+                    fail_count = 0
+                    print(f"[scheduler] {today} 完成：{stats}", flush=True)
+                except Exception as e:
+                    fail_count += 1
+                    print(f"[scheduler] 失败（{fail_count}/3），30s 后重试：{e}", file=sys.stderr, flush=True)
         time.sleep(30)
 
 

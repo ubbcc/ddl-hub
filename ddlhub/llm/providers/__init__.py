@@ -83,8 +83,11 @@ def normalize_name(name: str) -> str:
     return ALIASES.get(n, n)
 
 
-def build(cfg: dict | None = None) -> Provider:
-    """按 llm 配置造一个 provider。配置不全就抛 ProviderError，信息说清楚缺什么。"""
+def build(cfg: dict | None = None, *, retry: dict | None = None) -> Provider:
+    """按 llm 配置造一个 provider。配置不全就抛 ProviderError，信息说清楚缺什么。
+
+    retry 是 net.settings() 收敛后的重试参数，传给 provider 用于 HTTP 重试。
+    """
     c = dict(cfg or {})
     raw = str(c.get("provider") or c.get("backend") or "claude-cli")
     name = normalize_name(raw)
@@ -101,7 +104,7 @@ def build(cfg: dict | None = None) -> Provider:
     max_tokens = int(c.get("max_tokens", 4096) or 4096)
 
     if name == "claude-cli":
-        return ClaudeCLIProvider()
+        return ClaudeCLIProvider(retry=retry)
 
     if name == "anthropic":
         return AnthropicProvider(
@@ -110,6 +113,7 @@ def build(cfg: dict | None = None) -> Provider:
             base_url=base_url,
             max_tokens=max_tokens,
             temperature=temperature,
+            retry=retry,
         )
 
     if name == "openrouter":
@@ -120,6 +124,7 @@ def build(cfg: dict | None = None) -> Provider:
             temperature=temperature,
             max_tokens=max_tokens,
             reasoning=bool(c.get("reasoning", False)),
+            retry=retry,
         )
 
     if name == "siliconflow":
@@ -129,6 +134,7 @@ def build(cfg: dict | None = None) -> Provider:
             base_url=base_url,
             temperature=temperature,
             max_tokens=max_tokens,
+            retry=retry,
         )
 
     if name in ("openai-compat", "deepseek"):
@@ -144,6 +150,7 @@ def build(cfg: dict | None = None) -> Provider:
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
+            retry=retry,
         )
 
     raise ProviderError(

@@ -23,7 +23,7 @@ from pathlib import Path
 
 import requests
 
-from . import attach, db, kinds, llm, pipeline
+from . import attach, db, kinds, llm, net, pipeline
 
 API = "https://api.telegram.org/bot{token}/{method}"
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
@@ -61,17 +61,30 @@ HELP_TEXT = (
 
 # ---------------------------------------------------------------- Telegram
 
-_TOKEN_RE = re.compile(r"bot(\d+):[\w-]+")
+# 大多数 _send/_download 调用点拿不到 cfg，所以在这里存一份当前策略；
+# start()/run_forever() 启动时按 config.yaml 刷新。
+_RETRY = net.normalize(None)
+_NO_RETRY = {"enabled": False}
 
 
 def _redact(text: object) -> str:
     """requests 的异常消息会把整条 URL（含 bot token）带出来，别让它进日志。"""
-    return _TOKEN_RE.sub(r"bot\1:***", str(text))
+    return net.redact(text)
 
 
-def _api(token: str, method: str, payload: dict | None = None, timeout: int = 30) -> dict:
+def _api(token: str, method: str, payload: dict | None = None, timeout: int = 30, retry=None) -> dict:
     try:
-        r = requests.post(API.format(token=token, method=method), json=payload or {}, timeout=timeout)
+        r = net.request(
+            "POST",
+            API.format(token=token, method=method),
+            json=payload or {},
+            timeout=timeout,
+            retry=_RETRY if retry is None else retry,
+            idempotent=method != "sendMessage",
+            # 发消息宁可偶尔重复一条，也别丢；拉更新由外层轮询退避负责
+            retry_timeouts=method == "sendMessage",
+            label=f"telegram:{method}",
+        )
     except requests.RequestException as e:
         raise RuntimeError(f"{method} 请求失败：{_redact(e)}") from None
     try:
@@ -114,7 +127,14 @@ def _download(token: str, file_id: str, name: str) -> Path | None:
         rel = (info.get("result") or {}).get("file_path")
         if not rel:
             return None
-        r = requests.get(f"https://api.telegram.org/file/bot{token}/{rel}", timeout=120)
+        r = net.request(
+            "GET",
+            f"https://api.telegram.org/file/bot{token}/{rel}",
+            timeout=120,
+            retry=_RETRY,
+            idempotent=True,
+            label="telegram:file",
+        )
         r.raise_for_status()
     except (requests.RequestException, RuntimeError) as e:
         print(f"[intake] 下载 {name} 失败：{_redact(e)}")
@@ -731,6 +751,8 @@ def _token_of(cfg: dict) -> str:
 
 
 def run_forever(cfg: dict) -> None:
+    global _RETRY
+    _RETRY = net.settings(cfg, "intake")
     token = _token_of(cfg)
     if not token:
         print("[intake] 没有可用的 bot token（intake.token 和 notify.telegram.token 都是空的），手动录入不启动")
@@ -778,7 +800,7 @@ def run_forever(cfg: dict) -> None:
                 "offset": offset,
                 "timeout": 25,
                 "allowed_updates": ["message", "edited_message"],
-            }, timeout=45)
+            }, timeout=45, retry=_NO_RETRY)
         except Exception as e:
             fail_count += 1
             if fail_count == 1 or fail_count % 10 == 0:

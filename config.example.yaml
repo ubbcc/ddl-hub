@@ -21,6 +21,21 @@ llm:
   reasoning: false       # openrouter 专用：false=不走深度思考
   # 换配置不用手改：python -m ddlhub.setup_llm
 
+# 网络错误重试：所有同步 HTTP 调用共用；没写的键用 ddlhub/net.py 的默认值
+retry:
+  enabled: true
+  max_attempts: 3          # 总尝试次数（含第一次）；1 = 不重试
+  initial_delay: 1.0       # 首次退避秒数，之后 ×multiplier
+  max_delay: 20            # 单次退避上限
+  multiplier: 2.0
+  jitter: 0.3              # ±30% 抖动，避免多路同时重试
+  retry_statuses: [408, 429, 500, 502, 503, 504]
+  honor_retry_after: true  # 429/503 带 Retry-After 时按服务端要求等待
+  max_retry_after: 60      # Retry-After 超过这个值就放弃，不干等
+  # 可选：按子系统覆盖上面的键（llm / notify / sources / attach / intake）
+  # llm:
+  #   max_attempts: 2
+
 notify:
   daily_time: "08:00"      # 每天几点跑抽取+推送
   digest_hours: 72         # 摘要里列出未来多少小时内的任务（72=三天，与看板一致）

@@ -24,6 +24,7 @@ class SiliconFlowProvider(OpenAICompatProvider):
         base_url: str = "",
         temperature: float = 0.0,
         max_tokens: int = 4096,
+        retry: dict | None = None,
     ):
         if not api_key:
             raise ProviderError(
@@ -36,4 +37,5 @@ class SiliconFlowProvider(OpenAICompatProvider):
             model=model or DEFAULT_MODEL,
             temperature=temperature,
             max_tokens=max_tokens,
+            retry=retry,
         )

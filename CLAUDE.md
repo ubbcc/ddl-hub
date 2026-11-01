@@ -82,6 +82,11 @@ web/ · ics.py · notify.py      看板、日历订阅、每日摘要
 `extract_batch` 只负责组 prompt 和解析结果，不关心是哪家。
 `config.yaml` 的 `llm:` 段驱动 `build_provider()`，老配置的 `backend:` 由 `ALIASES` 兼容。
 
+**所有出网请求走 `ddlhub/net.py`。** `net.request()` / `net.Session()` 统一处理指数退避
+重试和日志里的密钥脱敏；新加 HTTP 调用别直接 `requests.get/post`。网络类失败要抛
+`ProviderError(transient=True)`，`pipeline._process_chunk` 见到 `transient` 不会二分拆批
+——否则一次断网会把 60 条消息放大成 60 次模型调用。重试参数在 `config.yaml` 的 `retry:` 段。
+
 **附件解析是三层兜底**（`attach.py`）：本地解析（docx/pdf/pptx/xlsx/Word COM）→
 本地结果不可用（空文本、乱码、扫描件）或格式不认识 → 远端解析，图片先试
 `llm.vision_model`，失败退回本机 `claude -p`。解析出的 engine 会写进消息头，
